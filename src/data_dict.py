@@ -1,6 +1,6 @@
 ## NHANES
 # set transformation for binary responses
-binary_response_dict = {1:1, 2:0, 7:0, 9:0, '':0} # Yes, No, Refused, Don't Know, Missing
+binary_response_dict = {1:1, 2:0, 7:float('nan'), 9:float('nan'), '':float('nan')} # Yes, No, Refused, Don't Know, Missing
 
 # set revelant mental health drugs 
 mh_drug_categories = ['ANTIDEPRESSANTS', "ANXIOLYTICS"]
@@ -9,10 +9,10 @@ mh_drug_categories = ['ANTIDEPRESSANTS', "ANXIOLYTICS"]
 PHQ_9_cols = ["DPQ010","DPQ010","DPQ020","DPQ030","DPQ040","DPQ050","DPQ060","DPQ070","DPQ080","DPQ090"]
 
 # set aggregated column names
-hypertension_prefix = 'HTN'
-htn_interview_col = f'{hypertension_prefix}_interview'
-htn_exam_col = f'{hypertension_prefix}_exam'
-htn_prescription_col = f'{hypertension_prefix}_prescription'
+htn_col = 'HTN'
+htn_interview_col = f'{htn_col}_interview'
+htn_exam_col = f'{htn_col}_exam'
+htn_prescription_col = f'{htn_col}_prescription'
 sleep_deprivation_col = 'sleep_deprivation'
 light_col = 'ambient_light'
 

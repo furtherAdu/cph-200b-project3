@@ -43,7 +43,7 @@ dependencies:
   - brotli-python=1.0.9=py311h6a678d5_9
   - bzip2=1.0.8=h5eee18b_6
   - c-ares=1.19.1=h5eee18b_0
-  - ca-certificates=2024.12.31=h06a4308_0
+  - ca-certificates=2025.2.25=h06a4308_0
   - cached_property=1.5.2=pyha770c72_1
   - certifi=2025.1.31=py311h06a4308_0
   - cffi=1.17.1=py311h1fdaa30_1
@@ -253,6 +253,7 @@ dependencies:
   - pyppmd=1.0.0=py311h6a678d5_0
   - pyqt=5.15.10=py311h6a678d5_0
   - pyqt5-sip=12.13.0=py311h5eee18b_0
+  - pyreadstat=1.2.7=py311hdcc4c9d_0
   - pysocks=1.7.1=py311h06a4308_0
   - python=3.11.11=he870216_0
   - python-dateutil=2.9.0post0=py311h06a4308_2
@@ -335,3 +336,4 @@ dependencies:
       - kiwisolver==1.4.4
       - pyparsing==3.2.0
       - unicodedata2==15.1.0
+prefix: /home/hentipapai/miniconda3/envs/cph200b_project3

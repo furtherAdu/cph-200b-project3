@@ -1,7 +1,9 @@
 import os
+import gc
 import re
 import requests
 from urllib.parse import urlparse
+import pyreadstat
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler
@@ -11,9 +13,9 @@ from scipy.stats import spearmanr, norm
 
 from src.directory import data_dir, NHANES_dir, NHANES_vars_lookup_filename
 from src.data_dict import NHANES_transformations, binary_response_dict, NHANES_nan_fill
-from src.data_dict import htn_exam_col, htn_prescription_col, htn_interview_col, physical_activity_col, accelerometer_col,\
+from src.data_dict import htn_col, htn_exam_col, htn_prescription_col, htn_interview_col, physical_activity_col, accelerometer_col,\
     race_ethnicity_col, gender_col, age_col,smoker_col, income_col, depression_col, sleep_deprivation_col, sleep_troubles_col,\
-    PHQ_9_cols, bmi_col, mh_drug_categories, mh_drug_col, diabetes_col, sedentary_col
+    PHQ_9_cols, bmi_col, mh_drug_categories, mh_drug_col, diabetes_col, sedentary_col, light_col
 
 
 def get_descriptive_stats(df, numerical_features):
@@ -94,34 +96,6 @@ def one_hot(df, cols):
         del df[col]
     return df
 
-def preprocess_ist(data, feature_cols, untransformed_cols, heparin_cols, combined_hep_col='DH14'):
-    # handle 'U' for RCONSC
-    data['RCONSC'] = data['RCONSC'].replace({'U':'unc'})
-
-    # map strings to numeric
-    data = data.replace({'Y':1, 'y':1, 'N':0, 'n':0, 'C':float('nan'), 'U': float('nan')})
-
-    # combine heparin columns
-    data[combined_hep_col] = data[heparin_cols].sum(axis=1) > 0
-    data.drop(heparin_cols, axis=1, inplace=True)
-
-    # get columns by data type
-    untransformed_cols.append(combined_hep_col)
-    categorical_cols = list(set(data.columns[data.apply(lambda x: x.nunique() < 10)]) - set(untransformed_cols))
-    numerical_cols = list(set(data.columns) - set(categorical_cols + untransformed_cols))
-
-    # one-hot encode categorical data
-    data = one_hot(data, categorical_cols)
-
-    # standardize numerical data
-    scaler = StandardScaler()
-    data[numerical_cols] = scaler.fit_transform(data[numerical_cols])
-
-    # get covariates
-    covariates = [x for x in data.columns for y in feature_cols if x.startswith(y)]
-
-    return data, covariates
-
 def check_estimator_normality(value, variance, alpha=0.05):
     std_dev = np.sqrt(variance)
     z_score = value / std_dev
@@ -145,16 +119,64 @@ def check_strings_in_columns(df, columns, strings):
         results[index] = 1 if found else 0
     return results
 
+def read_sas_chunk(filename, chunksize=5e5, offset=0, columns=None):
+        
+    # Get the function object in a variable getChunk
+    if filename.lower().endswith('sas7bdat'):
+        getChunk = pyreadstat.read_sas7bdat
+    else:
+        getChunk = pyreadstat.read_xport
+        
+    offset += chunksize
+    chunk, _ = getChunk(filename, row_limit=chunksize, row_offset=offset, usecols=columns)
+        
+    return chunk
+
 def get_NHANES_questionnaire_df(vars_lookup_df, dataset_path, columns, index='SEQN', q_name='Questionnaire'):
     # read in dataframe
     encoding = "utf-8" if 'RXQ_RX_H.xpt' not in dataset_path else None
-    df = pd.read_sas(dataset_path, index=index, encoding=encoding)[columns]
+    
+    if 'PAXMIN_H.xpt' in dataset_path: # ambient light
+        offset = 0
+        chunk_size = 1e6
+        
+        def get_nightly_lux(df):
+            total_days = df['PAXPREDM'].groupby(index).count() / (60 * 24) # total days wearing actigraphy band
+            sleep_wear = df[df['PAXPREDM']==2]  # predicted sleep status
+            summed_lux_asleep = sleep_wear['PAXLXMM'].groupby(index).sum()
+            df = pd.concat([total_days, summed_lux_asleep], axis=1).rename(columns={'PAXPREDM':'total_days', 'PAXLXMM':'summed_lux'})
+            return df
+        
+        df = read_sas_chunk(dataset_path, chunk_size, offset, [index, *columns]).set_index(index).astype(float)
+        df = get_nightly_lux(df)
+        
+        empty_chunk = False
+        while not empty_chunk:
+            offset += chunk_size
+            chunk = read_sas_chunk(dataset_path, chunk_size, offset, [index, *columns]).set_index(index).astype(float)
+            print(offset)
+            empty_chunk = chunk.empty 
+            chunk = get_nightly_lux(chunk)
+            
+            df = pd.concat([df, chunk]).groupby(index).sum()
+
+            del chunk
+            gc.collect()
+        
+        # get nightly lux per day
+        df[light_col] = df['summed_lux'] / df['total_days']
+        
+        # drop unecessary cols
+        df.drop(['total_days', 'summed_lux'], axis=1, inplace=True)
+        
+    else:
+        df = pd.read_sas(dataset_path, index=index, encoding=encoding)[columns]
     
     if 'PAQ_H.xpt' in dataset_path: # physical activity self-reported
         vigorous_moderate_activity_cols = NHANES_transformations[physical_activity_col]
         
         # get indicator variable
-        df[vigorous_moderate_activity_cols] = df[vigorous_moderate_activity_cols].replace(binary_response_dict).fillna(0)
+        df[vigorous_moderate_activity_cols] = df[vigorous_moderate_activity_cols].replace(binary_response_dict)
         df[physical_activity_col] = (df[vigorous_moderate_activity_cols].sum(axis=1) > 0).astype(int)
         
         df[sedentary_col] = df['PAD680'].replace({7777:float('nan'), 
@@ -168,17 +190,8 @@ def get_NHANES_questionnaire_df(vars_lookup_df, dataset_path, columns, index='SE
         df = df.groupby(index).mean().rename(
             columns={NHANES_transformations[accelerometer_col][0]:accelerometer_col})
     
-    if 'PAXMIN_H.xpt' in dataset_path: # ambient light
-        total_minutes = df.groupby(index).count()
-        sleep_wear = df.query('PAXPREDM==2')
-        lux_value = sleep_wear['PAXLXMM'].groupby(index).sum(axis=1)
-        # quality_flag = sleep_wear['PAXFLGSM']
-        
-        df = lux_value / total_minutes
-        
-    
     if 'BPX_H.xpt' in dataset_path: # blood pressure examination
-        valid_BP = df['PEASCST1'].replace({2:1, 3:0, '':0}) # partial, not done, missing
+        valid_BP = df['PEASCST1'].replace({2:1, 3:0, '':float('nan')}) # partial, not done, missing
         systolic_cols = ['BPXSY1','BPXSY2','BPXSY3','BPXSY4']
         diastolic_cols = ['BPXDI1','BPXDI2','BPXDI3','BPXDI4']
         
@@ -200,7 +213,7 @@ def get_NHANES_questionnaire_df(vars_lookup_df, dataset_path, columns, index='SE
         df.drop(NHANES_transformations[htn_prescription_col], axis=1, inplace=True)
         
     if 'DEMO_H.xpt' in dataset_path: # demographics
-        df[race_ethnicity_col] = df['RIDRETH3'].replace({'':0}) # Race/ethnicity
+        df[race_ethnicity_col] = df['RIDRETH3'].replace({'':float('nan')}) # Race/ethnicity
         df[gender_col] = df['RIAGENDR'].replace({1:0, 2:1}) # Male, Female
         df[age_col] = df['RIDAGEYR'].astype(float) # Age
         df[income_col] = df['INDFMPIR'] # Ratio of family income to poverty
@@ -247,11 +260,10 @@ def get_NHANES_questionnaire_df(vars_lookup_df, dataset_path, columns, index='SE
         
         # calculate sleep deprivation
         sleep_deprivation_cutoffs = [0,5,7,24] # severe moderate, normal
-        sleep_hours = df['SLD010H'].replace({99: max(sleep_deprivation_cutoffs),
-                                             float('nan'): max(sleep_deprivation_cutoffs)})
+        sleep_hours = df['SLD010H'].replace({99: float('nan')})
         df[sleep_deprivation_col] = pd.cut(sleep_hours,
                                            bins=sleep_deprivation_cutoffs, 
-                                           labels=[2,1,0]).astype(int)
+                                           labels=[2,1,0]).astype(float)
 
         # drop unecessary cols
         df.drop(NHANES_transformations[sleep_troubles_col] +
@@ -259,7 +271,7 @@ def get_NHANES_questionnaire_df(vars_lookup_df, dataset_path, columns, index='SE
         
     if 'SMQ_H.xpt' in dataset_path: # cigarette use
         df[smoker_col] = df['SMQ040'].replace(
-            {1:2, 2:1, 3:0, 7:0, 9:0,'':0}) # everyday, some days, not at all, refused, don't know, missing
+            {1:2, 2:1, 3:0, 7:float('nan'), 9:float('nan'),'':float('nan')}) # everyday, some days, not at all, refused, don't know, missing
         
         # drop unnecessary cols
         df.drop(NHANES_transformations[smoker_col], axis=1, inplace=True)
@@ -289,7 +301,7 @@ def get_NHANES_questionnaire_df(vars_lookup_df, dataset_path, columns, index='SE
         assert pd.DataFrame.from_dict(relevant_drug_dict, orient='index').sum().item() > 0, f'None of {mh_drug_categories} found in the drug lookup df'
         
         # get indicator variable for use of drug categories
-        df[drug_id_col] = df[drug_id_col].replace({'':'0', **relevant_drug_dict}).astype(int)
+        df[drug_id_col] = df[drug_id_col].replace({'':float('nan'), **relevant_drug_dict})
         df[drug_use_col] = df[drug_use_col].replace(binary_response_dict)
         
         # create new df
@@ -338,10 +350,14 @@ def preprocess_NHANES(exclude: list, q_name='Questionnaire'):
         
         i += 1
     
-    # fill nan
-    for col, fill_value in NHANES_nan_fill.items():
-        if col in df.columns:
-            df[col] = df[col].fillna(fill_value)
+    # combine htn variables
+    htn_cols = [htn_exam_col, htn_interview_col, htn_prescription_col]
+    
+    if all([htn_col in df.columns for htn_col in htn_cols]):
+        df[htn_col] = (df[htn_cols].sum(axis=1) > 0).astype(int)
+        
+        # drop unnecessary cols
+        df.drop(htn_cols, axis=1, inplace=True)
     
     return df
 
