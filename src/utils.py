@@ -15,7 +15,8 @@ from src.directory import data_dir, NHANES_dir, NHANES_vars_lookup_filename
 from src.data_dict import NHANES_transformations, binary_response_dict
 from src.data_dict import htn_col, htn_exam_col, htn_prescription_col, htn_interview_col, physical_activity_col, accelerometer_col,\
     race_ethnicity_col, gender_col, age_col,smoker_col, income_col, depression_col, sleep_deprivation_col, sleep_troubles_col,\
-    PHQ_9_cols, bmi_col, mh_drug_categories, mh_drug_col, diabetes_col, sedentary_col, light_col, gc_drug_categories, gc_drug_col
+    PHQ_9_cols, bmi_col, mh_drug_categories, mh_drug_col, diabetes_col, sedentary_col, light_col, gc_drug_categories, gc_drug_col, \
+    smoker_recent_col, smoker_current_col, DBP_cutoff, SBP_cutoff, A1c_cutoff, PHQ_9_cuttoffs, sleep_deprivation_cutoffs
 
 
 def get_descriptive_stats(df, numerical_features):
@@ -154,7 +155,7 @@ def get_NHANES_questionnaire_df(vars_lookup_df, dataset_path, columns, index='SE
         while not empty_chunk:
             offset += chunk_size
             chunk = read_sas_chunk(dataset_path, chunk_size, offset, [index, *columns]).set_index(index).astype(float)
-            print(offset)
+            print(f'Processing chunk {offset} - {offset + chunk_size}')
             empty_chunk = chunk.empty 
             chunk = get_nightly_lux(chunk)
             
@@ -177,7 +178,8 @@ def get_NHANES_questionnaire_df(vars_lookup_df, dataset_path, columns, index='SE
         
         # get indicator variable
         df[vigorous_moderate_activity_cols] = df[vigorous_moderate_activity_cols].replace(binary_response_dict)
-        df[physical_activity_col] = (df[vigorous_moderate_activity_cols].sum(axis=1) > 0).astype(int)
+        df[physical_activity_col] = df[vigorous_moderate_activity_cols].sum(axis=1, min_count=1)
+        df[physical_activity_col] = df[physical_activity_col].apply(lambda x: 1 if x > 0 else x)
         
         df[sedentary_col] = df['PAD680'].replace({7777:float('nan'), 
                                                   9999:float('nan')}) / (24 * 60)
@@ -195,19 +197,26 @@ def get_NHANES_questionnaire_df(vars_lookup_df, dataset_path, columns, index='SE
         systolic_cols = ['BPXSY1','BPXSY2','BPXSY3','BPXSY4']
         diastolic_cols = ['BPXDI1','BPXDI2','BPXDI3','BPXDI4']
         
-        systolic_BP = df[systolic_cols].mean(axis=1).fillna(0)
-        diastolic_BP = df[diastolic_cols].mean(axis=1).fillna(0)
+        high_diastolic_BP = df[diastolic_cols].mean(axis=1)
+        high_diastolic_BP = high_diastolic_BP.apply(lambda x: 0 if x < DBP_cutoff else x)
+        high_diastolic_BP = high_diastolic_BP.apply(lambda x: 1 if x >= DBP_cutoff else x)
         
-        df[htn_exam_col] = (((systolic_BP > 130) + (diastolic_BP > 80)) > 0) * valid_BP
+        high_systolic_BP = df[systolic_cols].mean(axis=1)
+        high_systolic_BP = high_systolic_BP.apply(lambda x: 0 if x < SBP_cutoff else x)
+        high_systolic_BP = high_systolic_BP.apply(lambda x: 1 if x >= SBP_cutoff else x)
+        
+        df[htn_exam_col] = pd.concat([high_systolic_BP, high_diastolic_BP], axis=1).sum(axis=1, min_count=1) * valid_BP
+        df[htn_exam_col] = df[htn_exam_col].apply(lambda x: 1 if x > 0 else x)
         
         # drop unnecessary cols
         df.drop(NHANES_transformations[htn_exam_col], axis=1, inplace=True)
         
     if 'BPQ_H.xpt' in dataset_path: # blood pressure prescription self-reported        
-        taking_HTN_prescription = df['BPQ040A'].replace(binary_response_dict) > 0
-        taking_high_BP_prescription = df['BPQ050A'].replace(binary_response_dict) > 0
+        df['BPQ040A'].replace(binary_response_dict, inplace=True) # taking HTN prescription
+        df['BPQ050A'].replace(binary_response_dict, inplace=True) # taking high BP prescription
         
-        df[htn_prescription_col] = ((taking_HTN_prescription + taking_high_BP_prescription) > 0).astype(int).fillna(0) 
+        df[htn_prescription_col] = df[['BPQ040A', 'BPQ050A']].sum(axis=1, min_count=1)
+        df[htn_prescription_col] = df[htn_prescription_col].apply(lambda x: 1 if x > 0 else x)
         
         # drop unnecessary cols
         df.drop(NHANES_transformations[htn_prescription_col], axis=1, inplace=True)
@@ -223,58 +232,77 @@ def get_NHANES_questionnaire_df(vars_lookup_df, dataset_path, columns, index='SE
     
     if 'DIQ_H.xpt' in dataset_path: # diabetes interview
         # calculate diabetes
-        A1c_cutoff = 6.5
-        above_threshold_A1c = (df['DIQ280'].replace({777:0, 999:0, '':0})  # refused, don't know, missing
-                                >= A1c_cutoff).astype(int) 
-        diabetic_pill = df['DIQ070'].replace(binary_response_dict) 
-        insulin = df['DIQ050'].replace(binary_response_dict)
-        diabetes_diagnosis = df['DIQ010'].replace(binary_response_dict)
+        df['DIQ280'].replace({777:float('nan'), 999:float('nan'), '':float('nan')}, inplace=True)
+        df['DIQ280'] = df['DIQ280'].apply(lambda x: 0 if x < A1c_cutoff else x)
+        df['DIQ280'] = df['DIQ280'].apply(lambda x: 1 if x >= A1c_cutoff else x)
         
-        df[diabetes_col] = ((above_threshold_A1c + diabetic_pill + insulin + diabetes_diagnosis) > 0).astype(int)
+        df['DIQ070'].replace(binary_response_dict, inplace=True) # taking diabetic pill 
+        df['DIQ050'].replace(binary_response_dict, inplace=True) # insulin
+        df['DIQ010'].replace(binary_response_dict, inplace=True) # diabetes dx
+        
+        df[diabetes_col] = df[['DIQ280','DIQ070','DIQ050','DIQ010']].sum(axis=1, min_count=1)
+        df[diabetes_col] = df[diabetes_col].apply(lambda x: 1 if x > 0 else x)
         
         # calculate hypertension
         bp_response_dict = {7777:0, 9999:0, '':0} # refused, don't know, missing
-        recent_DBP = df["DIQ300D"].replace(bp_response_dict)
-        recent_SBP = df["DIQ300S"].replace(bp_response_dict)
-        high_BP = df["DIQ175H"].replace({17:1, '':0}).fillna(0) # high bp, missing
-        df[htn_interview_col] = (((recent_SBP > 130) + (recent_DBP > 80) + high_BP) > 0).astype(int)
+        
+        df["DIQ300D"].replace(bp_response_dict, inplace=True) # recent DBP
+        df["DIQ300D"] = df["DIQ300D"].apply(lambda x: 0 if x < DBP_cutoff else x)
+        df["DIQ300D"] = df["DIQ300D"].apply(lambda x: 1 if x >= DBP_cutoff else x)
+        
+        df["DIQ300S"].replace(bp_response_dict, inplace=True) # recent SBP
+        df["DIQ300S"] = df["DIQ300S"].apply(lambda x: 0 if x < SBP_cutoff else x)
+        df["DIQ300S"] = df["DIQ300S"].apply(lambda x: 1 if x >= SBP_cutoff else x)
+        
+        df["DIQ175H"].replace({17:1, '':float('nan')}, inplace=True) # high bp
+        
+        df[htn_interview_col] = df[["DIQ300D", "DIQ300S", "DIQ175H"]].sum(axis=1, min_count=1)
+        df[htn_interview_col] = df[htn_interview_col].apply(lambda x: 1 if x > 0 else x)
         
         # drop unnecessary cols
         df.drop(NHANES_transformations[htn_interview_col] + 
                 NHANES_transformations[diabetes_col], axis=1, inplace=True)
         
     if 'DPQ_H.xpt' in dataset_path: # depression screener
-        depression_cutoffs = [0,4,14,27] # minimal, mild/moderate, moderately severe/severe
-        df[depression_col] = pd.cut(df[PHQ_9_cols].sum(axis=1),
-                                    bins=depression_cutoffs, 
-                                    labels=[0,1,2]).fillna(0).astype(int)
+        df[depression_col] = pd.cut(df[PHQ_9_cols].round().sum(axis=1, min_count=1),
+                                    bins=PHQ_9_cuttoffs, 
+                                    include_lowest=True,
+                                    labels=[0,1,2]).astype(float)
         
         # drop unnecessary columns
         df.drop(PHQ_9_cols, axis=1, inplace=True)
     
     if 'SLQ_H.xpt' in dataset_path: # sleep disorders
         # calculate sleeping troubles
-        sdisorder_diagnosis = df['SLQ060'].replace(binary_response_dict)
-        reported_trouble_sleeping = df['SLQ050'].replace(binary_response_dict)
-        df[sleep_troubles_col] = ((sdisorder_diagnosis + reported_trouble_sleeping) > 0).astype(int)
+        df['SLQ060'].replace(binary_response_dict, inplace=True) # sleep disorder diagnosis
+        df['SLQ050'].replace(binary_response_dict, inplace=True) # reported trouble sleeping
+        df[sleep_troubles_col] = df[['SLQ050', 'SLQ060']].sum(axis=1, min_count=1)
+        df[sleep_troubles_col][df[sleep_troubles_col] > 0] = 1
         
         # calculate sleep deprivation
-        sleep_deprivation_cutoffs = [0,5,7,24] # severe moderate, normal
         sleep_hours = df['SLD010H'].replace({99: float('nan')})
         df[sleep_deprivation_col] = pd.cut(sleep_hours,
                                            bins=sleep_deprivation_cutoffs, 
+                                           include_lowest=True,
                                            labels=[2,1,0]).astype(float)
 
         # drop unecessary cols
         df.drop(NHANES_transformations[sleep_troubles_col] +
                 NHANES_transformations[sleep_deprivation_col] , axis=1, inplace=True)
-        
-    if 'SMQ_H.xpt' in dataset_path: # cigarette use
-        df[smoker_col] = df['SMQ040'].replace(
-            {1:2, 2:1, 3:0, 7:float('nan'), 9:float('nan'),'':float('nan')}) # everyday, some days, not at all, refused, don't know, missing
+    
+    if 'SMQRTU_H.xpt' in dataset_path: # recent tobacco use
+        df[smoker_recent_col] = df['SMQ681'].replace(
+            {1:1, 2:0, 7:float('nan'), 9:float('nan'),'':float('nan')}) # yes, no, refused, don't know, missing
         
         # drop unnecessary cols
-        df.drop(NHANES_transformations[smoker_col], axis=1, inplace=True)
+        df.drop(NHANES_transformations[smoker_col], axis=1, inplace=True, errors='ignore')
+        
+    if 'SMQ_H.xpt' in dataset_path: # current smoking
+        df[smoker_current_col] = df['SMQ040'].replace(
+            {1:1, 2:1, 3:0, 7:float('nan'), 9:float('nan'),'':float('nan')}) # everyday, some days, not at all, refused, don't know, missing
+        
+        # drop unnecessary cols
+        df.drop(NHANES_transformations[smoker_col], axis=1, inplace=True, errors='ignore')
 
     if 'BMX_H.xpt' in dataset_path: # body measures (BMI)
         df[bmi_col] = df['BMXBMI']
@@ -309,7 +337,7 @@ def get_NHANES_questionnaire_df(vars_lookup_df, dataset_path, columns, index='SE
         
         # create new df
         df = pd.DataFrame()
-        df[mh_drug_col] = (mh_drug_id * drug_use).groupby(index).sum() > 0 # ()).to_frame(name=mh_drug_col)
+        df[mh_drug_col] = (mh_drug_id * drug_use).groupby(index).sum() > 0
         df[gc_drug_col] = (gc_drug_id * drug_use).groupby(index).sum() > 0
         df = df.astype(int)
         
@@ -356,14 +384,19 @@ def preprocess_NHANES(exclude: list, q_name='Questionnaire'):
         
         i += 1
     
-    # combine htn variables
+    # combine variables
     htn_cols = [htn_exam_col, htn_interview_col, htn_prescription_col]
+    smoker_cols = [smoker_recent_col, smoker_current_col]
     
-    if all([htn_col in df.columns for htn_col in htn_cols]):
-        df[htn_col] = (df[htn_cols].sum(axis=1) > 0).astype(int)
+    for main_col, sub_cols in [(htn_col, htn_cols), 
+                               (smoker_col, smoker_cols)]:
         
-        # drop unnecessary cols
-        df.drop(htn_cols, axis=1, inplace=True)
+        if all([col in df.columns for col in sub_cols]):
+            df[main_col] = df[sub_cols].sum(axis=1, min_count=1)
+            df[main_col] = df[main_col].apply(lambda x: 1 if x > 0 else x)
+            
+            # drop unnecessary cols
+            df.drop(sub_cols, axis=1, inplace=True)
     
     return df
 

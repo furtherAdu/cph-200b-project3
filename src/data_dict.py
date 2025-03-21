@@ -9,6 +9,13 @@ gc_drug_categories = ['GLUCOCORTICOIDS']
 # Set PHQ-9 cols
 PHQ_9_cols = ["DPQ010","DPQ010","DPQ020","DPQ030","DPQ040","DPQ050","DPQ060","DPQ070","DPQ080","DPQ090"]
 
+# set cutoffs
+DBP_cutoff = 80
+SBP_cutoff = 130
+A1c_cutoff = 6.5
+PHQ_9_cuttoffs = [0,4,14,27] # minimal, mild/moderate, moderately severe/severe
+sleep_deprivation_cutoffs = [0,5,7,24] # severe moderate, normal
+
 # set aggregated column names
 htn_col = 'HTN'
 htn_interview_col = f'{htn_col}_interview'
@@ -31,6 +38,8 @@ race_ethnicity_col = 'race_ethnicity'
 gender_col = 'gender'
 age_col = 'age'
 smoker_col = 'smoker'
+smoker_recent_col = f'{smoker_col}_recent'
+smoker_current_col = f'{smoker_col}_current'
 bmi_col = 'BMI'
 income_col = 'poverty_ratio'
     
@@ -54,7 +63,7 @@ NHANES_transformations = {
     race_ethnicity_col:['RIDRETH3'],
     gender_col:['RIAGENDR'],
     age_col:['RIDAGEYR'],
-    smoker_col:['SMQ040'],
+    smoker_col:['SMQ040', 'SMQ681'],
     bmi_col:['BMXBMI'],
     income_col:['INDFMPIR']
 }

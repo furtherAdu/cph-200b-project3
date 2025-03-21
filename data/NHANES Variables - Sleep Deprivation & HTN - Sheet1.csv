@@ -17,7 +17,8 @@ DIQ300D,What was your recent DBP,Blood pressure is usually given as one number o
 DIQ300S,What was your recent SBP,Blood pressure is usually given as one number over another. What was {your/SP's} most recent blood pressure in numbers?,Diabetes (DIQ_H),2013-2014 Questionnaire,BloodPressure
 DIQ175H,High blood pressure,Why {Do you/Does SP} think {you are/he is/she is} at risk for diabetes or prediabetes? [Anything else?],Diabetes (DIQ_H),2013-2014 Questionnaire,BloodPressure
 BMXBMI,Body Mass Index (kg/m**2),Body Mass Index (kg/m**2),Body Measures (BMX_H),2013-2014 Examination,BMI
-SMQ040,Do you now smoke cigarettes,{Do you/Does SP} now smoke cigarettes?,Smoking - Cigarette Use (SMQ_H),2013-2014 Questionnaire,CigaretteStatus
+SMQ040,Do you now smoke cigarettes,{Do you/Does SP} now smoke cigarettes?,Smoking - Cigarette Use (SMQ_H),2013-2014 Questionnaire,TobaccoUse
+SMQ681,Smoked tobacco last 5 days?,"The following questions ask about use of tobacco products in the past 5 days. During the past 5 days, including today, did you smoke cigarettes, pipes, cigars, little cigars or cigarillos, water pipes, hookahs, or e-cigarettes?",Smoking - Recent Tobacco Use (SMQRTU_H),2013-2014 Questionnaire,TobaccoUse
 RIDAGEYR,Age in years at screening,Age in years of the participant at the time of screening. Individuals 80 and over are topcoded at 80 years of age.,Demographic Variables and Sample Weights (DEMO_H),2013-2014 Demographics,Demographics
 RIDRETH3,Race/Hispanic origin w/ NH Asian,"Recode of reported race and Hispanic origin information, with Non-Hispanic Asian Category",Demographic Variables and Sample Weights (DEMO_H),2013-2014 Demographics,Demographics
 RIAGENDR,Gender,Gender of the participant.,Demographic Variables and Sample Weights (DEMO_H),2013-2014 Demographics,Demographics
