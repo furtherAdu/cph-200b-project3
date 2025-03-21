@@ -12,10 +12,10 @@ from sklearn.model_selection import train_test_split
 from scipy.stats import spearmanr, norm
 
 from src.directory import data_dir, NHANES_dir, NHANES_vars_lookup_filename
-from src.data_dict import NHANES_transformations, binary_response_dict, NHANES_nan_fill
+from src.data_dict import NHANES_transformations, binary_response_dict
 from src.data_dict import htn_col, htn_exam_col, htn_prescription_col, htn_interview_col, physical_activity_col, accelerometer_col,\
     race_ethnicity_col, gender_col, age_col,smoker_col, income_col, depression_col, sleep_deprivation_col, sleep_troubles_col,\
-    PHQ_9_cols, bmi_col, mh_drug_categories, mh_drug_col, diabetes_col, sedentary_col, light_col
+    PHQ_9_cols, bmi_col, mh_drug_categories, mh_drug_col, diabetes_col, sedentary_col, light_col, gc_drug_categories, gc_drug_col
 
 
 def get_descriptive_stats(df, numerical_features):
@@ -283,8 +283,8 @@ def get_NHANES_questionnaire_df(vars_lookup_df, dataset_path, columns, index='SE
         df.drop(NHANES_transformations[bmi_col], axis=1, inplace=True)
         
     if 'RXQ_RX_H.xpt' in dataset_path: # prescription medication use
-        drug_id_col = 'RXDDRGID'
-        drug_use_col = 'RXDUSE'
+        drug_id_col = 'RXDDRGID' # generic drug code
+        drug_use_col = 'RXDUSE' # taken or used any prescription medicines in the past month
         
         # decode from pandas-inferred type of bytes
         df[drug_id_col] = df[drug_id_col].str.decode('utf-8')
@@ -297,15 +297,21 @@ def get_NHANES_questionnaire_df(vars_lookup_df, dataset_path, columns, index='SE
                                         index=drug_id_col)[mltc_vars]
         
         # get dictionary indicating whether drug is in the relevant drug categories
-        relevant_drug_dict = check_strings_in_columns(drug_lookup_df, mltc_vars, mh_drug_categories)
-        assert pd.DataFrame.from_dict(relevant_drug_dict, orient='index').sum().item() > 0, f'None of {mh_drug_categories} found in the drug lookup df'
-        
+        mh_drug_dict = check_strings_in_columns(drug_lookup_df, mltc_vars, mh_drug_categories)
+        gc_drug_dict = check_strings_in_columns(drug_lookup_df, mltc_vars, gc_drug_categories)
+        assert pd.DataFrame.from_dict(mh_drug_dict, orient='index').sum().item() > 0, f'None of {mh_drug_categories} found in the drug lookup df'
+        assert pd.DataFrame.from_dict(gc_drug_dict, orient='index').sum().item() > 0, f'None of {gc_drug_categories} found in the drug lookup df'
+
         # get indicator variable for use of drug categories
-        df[drug_id_col] = df[drug_id_col].replace({'':float('nan'), **relevant_drug_dict})
-        df[drug_use_col] = df[drug_use_col].replace(binary_response_dict)
+        mh_drug_id = df[drug_id_col].replace({'':float('nan'), **mh_drug_dict})
+        gc_drug_id = df[drug_id_col].replace({'':float('nan'), **gc_drug_dict})
+        drug_use = df[drug_use_col].replace(binary_response_dict)
         
         # create new df
-        df = ((df[drug_id_col] * df[drug_use_col]).groupby(index).sum() > 0).astype(int).to_frame(name=mh_drug_col)
+        df = pd.DataFrame()
+        df[mh_drug_col] = (mh_drug_id * drug_use).groupby(index).sum() > 0 # ()).to_frame(name=mh_drug_col)
+        df[gc_drug_col] = (gc_drug_id * drug_use).groupby(index).sum() > 0
+        df = df.astype(int)
         
     return df
 

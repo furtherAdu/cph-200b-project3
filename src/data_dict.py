@@ -2,8 +2,9 @@
 # set transformation for binary responses
 binary_response_dict = {1:1, 2:0, 7:float('nan'), 9:float('nan'), '':float('nan')} # Yes, No, Refused, Don't Know, Missing
 
-# set revelant mental health drugs 
+# set revelant drugs 
 mh_drug_categories = ['ANTIDEPRESSANTS', "ANXIOLYTICS"]
+gc_drug_categories = ['GLUCOCORTICOIDS']
 
 # Set PHQ-9 cols
 PHQ_9_cols = ["DPQ010","DPQ010","DPQ020","DPQ030","DPQ040","DPQ050","DPQ060","DPQ070","DPQ080","DPQ090"]
@@ -19,6 +20,7 @@ light_col = 'ambient_light'
 diabetes_col = 'diabetes'
 depression_col = 'depression'
 mh_drug_col = '_'.join(mh_drug_categories)
+gc_drug_col = gc_drug_categories[0]
 sleep_troubles_col = 'sleep_troubles'
 
 physical_activity_col = 'physical_activity'
