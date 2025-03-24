@@ -1,9 +1,10 @@
 from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
 
 
-def propensity_estimator(X, T): # propensity scores
+def propensity_estimator(X, T, multiclass=False): # propensity scores
     propensity_model = GradientBoostingClassifier(random_state=40)
-    pi = propensity_model.fit(X, T).predict_proba(X)[:, 1]
+    pi = propensity_model.fit(X, T).predict_proba(X)
+    pi = pi if multiclass else pi[:, 1]
     return pi
 
 def unadjusted_DM_estimator(data, treatment_var, outcome_var, **kwargs):
