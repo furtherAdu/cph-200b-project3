@@ -1,9 +1,12 @@
 from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
 import numpy as np
 
+base_regressor = GradientBoostingRegressor
+base_classifier = GradientBoostingClassifier
+
 def propensity_estimator(X, T, multiclass=False): # propensity scores
     # this now outputs scores for each probability class
-    propensity_model = GradientBoostingClassifier(random_state=40)
+    propensity_model = base_classifier(random_state=40)
     pi = propensity_model.fit(X, T).predict_proba(X)
     pi = pi if multiclass else pi[:, 1]
     return pi
@@ -12,7 +15,7 @@ def unadjusted_DM_estimator(data, treatment_var, outcome_var, **kwargs):
     # changed this to give us multi-class difference in means
 
     # get avg treatement effect for each treatment
-    tx_classes = np.sort(data[treatment_var].unique())
+    tx_classes = np.sort(data[treatment_var].unique()).astype(int)
     estimates = {k: data.loc[data[treatment_var] == k, outcome_var].mean()
                 for k in tx_classes}
 
@@ -21,18 +24,19 @@ def unadjusted_DM_estimator(data, treatment_var, outcome_var, **kwargs):
     for i in range(len(tx_classes)):
         for j in range(i + 1, len(tx_classes)):
             diff = estimates[tx_classes[j]] - estimates[tx_classes[i]]
-            results[f"{tx_classes[j]} vs {tx_classes[i]}"] = diff
+            results[f"{tx_classes[j]} vs {tx_classes[i]}"] = {'tau': diff}
 
     return results
 
-def ipw_estimator(data, treatment_var, outcome_var, covariates):
+def ipw_estimator(data, treatment_var, outcome_var, covariates, **kwargs):
     # modified to return dict of results with tau and var for each treatment group difference
     X = data[covariates]
     T = data[treatment_var]
     Y = data[outcome_var]
     
-    pi = propensity_estimator(X,T)
-    tx_classes = np.sort(np.unique(T))
+    tx_classes = np.sort(np.unique(T)).astype(int)
+    multiclass = len(tx_classes) > 2
+    pi = propensity_estimator(X,T, multiclass=multiclass)
 
     # get weighted values for each person and get mean
     outcomes = {}
@@ -58,25 +62,26 @@ def ipw_estimator(data, treatment_var, outcome_var, covariates):
 
     return results
 
-def t_learner(data, treatment_var, outcome_var, covariates):
+def t_learner(data, treatment_var, outcome_var, covariates, continuous_outcome=False, **kwargs):
     # https://statisticaloddsandends.wordpress.com/2022/05/20/t-learners-s-learners-and-x-learners/
     X = data[covariates]
     T = data[treatment_var]
     Y = data[outcome_var]
+    outcome_model_class = base_regressor if continuous_outcome else base_classifier
 
-    tx_classes = np.sort(np.unique(T))
+    tx_classes = np.sort(np.unique(T)).astype(int)
 
     # train one model on each tx group and store it
     models = {}
     for k in tx_classes:
-        model = GradientBoostingClassifier(random_state=40)
+        model = outcome_model_class(random_state=40)
         model.fit(X[T==k], Y[T==k])
         models[k]=model
     
     # predict outcome for all patients using each model
     mu={}
     for k in tx_classes:
-        mu[k] = models[k].predict_proba(X)[:,1]
+        mu[k] = model.predict(X) if continuous_outcome else model.predict_proba(X)[:,1]
 
     # get ates 
     results={}
@@ -90,15 +95,16 @@ def t_learner(data, treatment_var, outcome_var, covariates):
 
     return results
 
-def s_learner(data, treatment_var, outcome_var, covariates):
+def s_learner(data, treatment_var, outcome_var, covariates, continuous_outcome=False, **kwargs):
     # https://statisticaloddsandends.wordpress.com/2022/05/20/t-learners-s-learners-and-x-learners/
     XT = data[[*covariates, treatment_var]]
     T = data[treatment_var]
     Y = data[outcome_var]
-    
-    tx_classes = np.sort(np.unique(T))
+    outcome_model_class = base_regressor if continuous_outcome else base_classifier
 
-    model = GradientBoostingClassifier(random_state=40)
+    tx_classes = np.sort(np.unique(T)).astype(int)
+    
+    model = outcome_model_class(random_state=40)
     model.fit(XT, Y)
 
     mu = {}
@@ -107,7 +113,7 @@ def s_learner(data, treatment_var, outcome_var, covariates):
     for k in tx_classes:
         X_k = XT.copy()
         X_k[treatment_var] = k
-        mu[k] = model.predict_proba(X_k)[:,1]
+        mu[k] = model.predict(X_k) if continuous_outcome else model.predict_proba(X_k)[:,1]
 
     # calculate pairwise ates for each tx group
     results = {}
@@ -120,22 +126,23 @@ def s_learner(data, treatment_var, outcome_var, covariates):
             }
     return results
 
-def x_learner(data, treatment_var, outcome_var, covariates):
+def x_learner(data, treatment_var, outcome_var, covariates, continuous_outcome=False, **kwargs):
     # https://statisticaloddsandends.wordpress.com/2022/05/20/t-learners-s-learners-and-x-learners/
     X = data[covariates]
     T = data[treatment_var]
     Y = data[outcome_var]
+    outcome_model_class = base_regressor if continuous_outcome else base_classifier
 
-    tx_classes = np.sort(np.unique(T))
+    tx_classes = np.sort(np.unique(T)).astype(int)
     n_txclasses = len(tx_classes)
+    multiclass = n_txclasses > 2
 
     # t-learner
     t_models={}
     for k in tx_classes:
-        model = GradientBoostingClassifier(random_state=40)
+        model = outcome_model_class(random_state=40)
         model.fit(X[T==k], Y[T==k])
         t_models[k] = model
-
     
     # build ITE estimator
     tau_models={}
@@ -146,17 +153,17 @@ def x_learner(data, treatment_var, outcome_var, covariates):
         for j in tx_classes:
             if j==k:
                 continue
-            mu_j = t_models[j].predict_proba(X_k)[:,1]
+            mu_j = t_models[j].predict(X_k) if continuous_outcome else t_models[j].predict_proba(X_k)[:,1]
             D_kj = Y[T==k] - mu_j
             outcomes.append(D_kj)
             
         D_mean = np.mean(outcomes, axis=0)
-        model = GradientBoostingRegressor(random_state=40)
+        model = base_regressor(random_state=40)
         model.fit(X_k, D_mean)
         tau_models[k] = model
     
     # get propensity score
-    pi = propensity_estimator(X,T)
+    pi = propensity_estimator(X,T, multiclass=multiclass)
 
     # get individual treatment effects from tau models
     tau_i = {}
@@ -174,28 +181,31 @@ def x_learner(data, treatment_var, outcome_var, covariates):
             }
     return results
 
-def aipw_estimator(data, treatment_var, outcome_var, covariates):
+def aipw_estimator(data, treatment_var, outcome_var, covariates, continuous_outcome=False, **kwargs):
     X = data[covariates]
     XT = data[[*covariates, treatment_var]]
     T = data[treatment_var]
     Y = data[outcome_var]
+    outcome_model_class = base_regressor if continuous_outcome else base_classifier
 
-    tx_classes = np.sort(np.unique(T))
+    tx_classes = np.sort(np.unique(T)).astype(int)
     n_txclasses = len(tx_classes)
+    multiclass = n_txclasses > 2
 
     # propensity model
-    pi = propensity_estimator(X,T)
+    pi = propensity_estimator(X,T, multiclass=multiclass)
 
     # s-learner outcome model
-    outcome_model = GradientBoostingClassifier(random_state=40)
+    outcome_model = outcome_model_class(random_state=40)
     outcome_model.fit(XT, Y)
+    print(f'\tS-learner score: {outcome_model.score(XT,Y)}')
 
     # get predictions from outcome model for each treatment class
     mu = np.zeros((len(data), n_txclasses))
     for k in range(n_txclasses):
         X_k = XT.copy()
         X_k[treatment_var] = k
-        mu[:, k] = outcome_model.predict_proba(X_k)[:,1]
+        mu[:, k] = outcome_model.predict(X_k) if continuous_outcome else outcome_model.predict_proba(X_k)[:,1]
 
     # get ipw adjusted estimates
     tau_i = {}
