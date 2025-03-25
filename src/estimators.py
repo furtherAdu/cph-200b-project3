@@ -1,7 +1,7 @@
 from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
 import numpy as np
 
-def propensity_estimator(X, T, multiclass=True): # propensity scores
+def propensity_estimator(X, T, multiclass=False): # propensity scores
     # this now outputs scores for each probability class
     propensity_model = GradientBoostingClassifier(random_state=40)
     pi = propensity_model.fit(X, T).predict_proba(X)
