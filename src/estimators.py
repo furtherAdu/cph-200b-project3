@@ -5,6 +5,7 @@ def propensity_estimator(X, T): # propensity scores
     # this now outputs scores for each probability class
     propensity_model = GradientBoostingClassifier(random_state=40)
     pi = propensity_model.fit(X, T).predict_proba(X)
+    pi = pi if multiclass else pi[:, 1]
     return pi
 
 def unadjusted_DM_estimator(data, treatment_var, outcome_var, **kwargs):

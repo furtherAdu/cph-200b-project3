@@ -1,5 +1,6 @@
 name: cph200b_project3
 channels:
+  - anaconda
   - pytorch
   - nvidia
   - conda-forge
@@ -229,6 +230,7 @@ dependencies:
   - pandas=2.2.3=py311h6a678d5_0
   - pandocfilters=1.5.0=pyhd3eb1b0_0
   - parso=0.8.4=py311h06a4308_0
+  - patsy=1.0.1=py311h06a4308_0
   - pcre2=10.42=hebb0a14_1
   - pexpect=4.8.0=pyhd3eb1b0_3
   - pillow=11.0.0=py311hcea889d_1
@@ -297,6 +299,7 @@ dependencies:
   - soupsieve=2.5=py311h06a4308_0
   - sqlite=3.45.3=h5eee18b_0
   - stack_data=0.2.0=pyhd3eb1b0_0
+  - statsmodels=0.14.4=py311h5eee18b_0
   - sympy=1.13.3=py311h06a4308_0
   - tbb=2021.8.0=hdb19cb5_0
   - terminado=0.17.1=py311h06a4308_0
@@ -336,4 +339,3 @@ dependencies:
       - kiwisolver==1.4.4
       - pyparsing==3.2.0
       - unicodedata2==15.1.0
-prefix: /home/hentipapai/miniconda3/envs/cph200b_project3

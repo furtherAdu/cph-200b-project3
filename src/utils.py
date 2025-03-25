@@ -16,7 +16,8 @@ from src.data_dict import NHANES_transformations, binary_response_dict
 from src.data_dict import htn_col, htn_exam_col, htn_prescription_col, htn_interview_col, physical_activity_col, accelerometer_col,\
     race_ethnicity_col, gender_col, age_col,smoker_col, income_col, depression_col, sleep_deprivation_col, sleep_troubles_col,\
     PHQ_9_cols, bmi_col, mh_drug_categories, mh_drug_col, diabetes_col, sedentary_col, light_col, gc_drug_categories, gc_drug_col, \
-    smoker_recent_col, smoker_current_col, DBP_cutoff, SBP_cutoff, A1c_cutoff, PHQ_9_cuttoffs, sleep_deprivation_cutoffs
+    smoker_recent_col, smoker_current_col, DBP_cutoff, SBP_cutoff, A1c_cutoff, PHQ_9_cuttoffs, sleep_deprivation_cutoffs, \
+    systolic_col, diastolic_col
 
 
 def get_descriptive_stats(df, numerical_features):
@@ -142,10 +143,10 @@ def get_NHANES_questionnaire_df(vars_lookup_df, dataset_path, columns, index='SE
         chunk_size = 1e6
         
         def get_nightly_lux(df):
-            total_days = df['PAXPREDM'].groupby(index).count() / (60 * 24) # total days wearing actigraphy band
             sleep_wear = df[df['PAXPREDM']==2]  # predicted sleep status
-            summed_lux_asleep = sleep_wear['PAXLXMM'].groupby(index).sum()
-            df = pd.concat([total_days, summed_lux_asleep], axis=1).rename(columns={'PAXPREDM':'total_days', 'PAXLXMM':'summed_lux'})
+            total_sleep_minutes = df['PAXPREDM'].groupby(index).count() # total sleep minutes
+            summed_lux_asleep = sleep_wear['PAXLXMM'].groupby(index).sum() # melanopic EDI
+            df = pd.concat([total_sleep_minutes, summed_lux_asleep], axis=1).rename(columns={'PAXPREDM':'total_sleep_minutes', 'PAXLXMM':'summed_lux'})
             return df
         
         df = read_sas_chunk(dataset_path, chunk_size, offset, [index, *columns]).set_index(index).astype(float)
@@ -164,11 +165,8 @@ def get_NHANES_questionnaire_df(vars_lookup_df, dataset_path, columns, index='SE
             del chunk
             gc.collect()
         
-        # get nightly lux per day
-        df[light_col] = df['summed_lux'] / df['total_days']
-        
-        # drop unecessary cols
-        df.drop(['total_days', 'summed_lux'], axis=1, inplace=True)
+        # get nightly lux per minute
+        df[light_col] = df['summed_lux'] / df['total_sleep_minutes']
         
     else:
         df = pd.read_sas(dataset_path, index=index, encoding=encoding)[columns]
@@ -197,12 +195,14 @@ def get_NHANES_questionnaire_df(vars_lookup_df, dataset_path, columns, index='SE
         systolic_cols = ['BPXSY1','BPXSY2','BPXSY3','BPXSY4']
         diastolic_cols = ['BPXDI1','BPXDI2','BPXDI3','BPXDI4']
         
-        high_diastolic_BP = df[diastolic_cols].mean(axis=1)
-        high_diastolic_BP = high_diastolic_BP.apply(lambda x: 0 if x < DBP_cutoff else x)
+        diastolic_BP = df[diastolic_cols].mean(axis=1)
+        df[diastolic_col] = diastolic_BP
+        high_diastolic_BP = diastolic_BP.apply(lambda x: 0 if x < DBP_cutoff else x)
         high_diastolic_BP = high_diastolic_BP.apply(lambda x: 1 if x >= DBP_cutoff else x)
         
-        high_systolic_BP = df[systolic_cols].mean(axis=1)
-        high_systolic_BP = high_systolic_BP.apply(lambda x: 0 if x < SBP_cutoff else x)
+        systolic_BP = df[systolic_cols].mean(axis=1)
+        df[systolic_col] = systolic_BP
+        high_systolic_BP = systolic_BP.apply(lambda x: 0 if x < SBP_cutoff else x)
         high_systolic_BP = high_systolic_BP.apply(lambda x: 1 if x >= SBP_cutoff else x)
         
         df[htn_exam_col] = pd.concat([high_systolic_BP, high_diastolic_BP], axis=1).sum(axis=1, min_count=1) * valid_BP

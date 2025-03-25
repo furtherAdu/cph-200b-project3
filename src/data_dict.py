@@ -21,6 +21,8 @@ htn_col = 'HTN'
 htn_interview_col = f'{htn_col}_interview'
 htn_exam_col = f'{htn_col}_exam'
 htn_prescription_col = f'{htn_col}_prescription'
+systolic_col = 'SBP'
+diastolic_col = 'DBP'
 sleep_deprivation_col = 'sleep_deprivation'
 light_col = 'ambient_light'
 
