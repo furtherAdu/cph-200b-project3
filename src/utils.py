@@ -13,11 +13,7 @@ from scipy.stats import spearmanr, norm
 
 from src.directory import data_dir, NHANES_dir, NHANES_vars_lookup_filename
 from src.data_dict import NHANES_transformations, binary_response_dict
-from src.data_dict import htn_col, htn_exam_col, htn_prescription_col, htn_interview_col, physical_activity_col, accelerometer_col,\
-    race_ethnicity_col, gender_col, age_col,smoker_col, income_col, depression_col, sleep_deprivation_col, sleep_troubles_col,\
-    PHQ_9_cols, bmi_col, mh_drug_categories, mh_drug_col, diabetes_col, sedentary_col, light_col, gc_drug_categories, gc_drug_col, \
-    smoker_recent_col, smoker_current_col, DBP_cutoff, SBP_cutoff, A1c_cutoff, PHQ_9_cuttoffs, sleep_deprivation_cutoffs, \
-    systolic_col, diastolic_col
+from src.data_dict import *
 
 
 def get_descriptive_stats(df, numerical_features):
@@ -167,7 +163,7 @@ def get_NHANES_questionnaire_df(vars_lookup_df, dataset_path, columns, index='SE
         
         # get nightly lux per minute
         df[light_col] = df['summed_lux'] / df['total_sleep_minutes']
-        
+    
     else:
         df = pd.read_sas(dataset_path, index=index, encoding=encoding)[columns]
     
@@ -180,7 +176,7 @@ def get_NHANES_questionnaire_df(vars_lookup_df, dataset_path, columns, index='SE
         df[physical_activity_col] = df[physical_activity_col].apply(lambda x: 1 if x > 0 else x)
         
         df[sedentary_col] = df['PAD680'].replace({7777:float('nan'), 
-                                                  9999:float('nan')}) / (24 * 60)
+                                                  9999:float('nan')}) / (24 * 60) # percentage of day sedentary
         
         # drop unnecessary columns
         df.drop(vigorous_moderate_activity_cols + 
@@ -226,9 +222,10 @@ def get_NHANES_questionnaire_df(vars_lookup_df, dataset_path, columns, index='SE
         df[gender_col] = df['RIAGENDR'].replace({1:0, 2:1}) # Male, Female
         df[age_col] = df['RIDAGEYR'].astype(float) # Age
         df[income_col] = df['INDFMPIR'] # Ratio of family income to poverty
+        df[marital_col] = df['DMDMARTL'].replace({77:float('nan'), 99:float('nan'), '':float('nan')}) # marital/partner status
         
         # drop unnecessary cols
-        df.drop(['RIDRETH3', 'RIAGENDR', 'RIDAGEYR', 'INDFMPIR'], axis=1, inplace=True)
+        df.drop(['RIDRETH3', 'RIAGENDR', 'RIDAGEYR', 'INDFMPIR', 'DMDMARTL'], axis=1, inplace=True)
     
     if 'DIQ_H.xpt' in dataset_path: # diabetes interview
         # calculate diabetes
@@ -262,12 +259,46 @@ def get_NHANES_questionnaire_df(vars_lookup_df, dataset_path, columns, index='SE
         # drop unnecessary cols
         df.drop(NHANES_transformations[htn_interview_col] + 
                 NHANES_transformations[diabetes_col], axis=1, inplace=True)
+    
+    if 'HIQ_H.xpt' in dataset_path: # insurance status
+        df[insurance_col] = df['HIQ011'].replace(binary_response_dict)
+
+        # drop unnecessary cols
+        df.drop(NHANES_transformations[insurance_col], axis=1, inplace=True)
+    
+    if 'ALQ_H.xpt' in dataset_path: # alcohol use
+        alc_avg_quantity = df['ALQ130'].replace(
+            {777:float('nan'), 999:float('nan'), '':float('nan')})  # Avg # alcoholic drinks/day when drinking - past 12 mos
+        
+        alc_frequency = df['ALQ120Q'].replace(
+            {777:float('nan'), 999:float('nan'), '':float('nan')}).round()  # How often drink alcohol over past 12 mos
+        
+        alc_avg_quantity[alc_frequency == 0] = 0
+        
+        df[alcohol_col] = alc_avg_quantity * alc_frequency # total # drinks/year
+        
+        # drop unnecessary cols
+        df.drop(NHANES_transformations[alcohol_col], axis=1, inplace=True)
+    
+    if 'MCQ_H.xpt' in dataset_path: # cardiovascular disease
+        df[cvd_col] = df[["MCQ160B", # Ever told had congestive heart failure
+                          "MCQ160C", # Ever told you had coronary heart disease
+                          "MCQ160E", # Ever told you had heart attack
+                          "MCQ160D", # Ever told you had angina/angina pectoris
+                          "MCQ160F"] # Ever told you had a stroke
+                         ].sum(axis=1, min_count=1)
+        df[cvd_col].apply(lambda x: 1 if x > 0 else x)
+        
+        # drop unnecessary cols
+        df.drop(NHANES_transformations[cvd_col], axis=1, inplace=True)
         
     if 'DPQ_H.xpt' in dataset_path: # depression screener
-        df[depression_col] = pd.cut(df[PHQ_9_cols].round().sum(axis=1, min_count=1),
-                                    bins=PHQ_9_cuttoffs, 
-                                    include_lowest=True,
-                                    labels=[0,1,2]).astype(float)
+        # df[depression_col] = pd.cut(df[PHQ_9_cols].round().sum(axis=1, min_count=1),
+        #                             bins=PHQ_9_cuttoffs, 
+        #                             include_lowest=True,
+        #                             labels=[0,1,2]).astype(float)
+        
+        df[depression_col] = df[PHQ_9_cols].round().sum(axis=1, min_count=1) # raw PHQ-9 summed score
         
         # drop unnecessary columns
         df.drop(PHQ_9_cols, axis=1, inplace=True)
@@ -297,12 +328,15 @@ def get_NHANES_questionnaire_df(vars_lookup_df, dataset_path, columns, index='SE
         # drop unnecessary cols
         df.drop(NHANES_transformations[smoker_col], axis=1, inplace=True, errors='ignore')
         
-    if 'SMQ_H.xpt' in dataset_path: # current smoking
-        df[smoker_current_col] = df['SMQ040'].replace(
+    if 'SMQ_H.xpt' in dataset_path: # smoking status
+        df[smoker_current_col] = df['SMQ040'].replace( 
             {1:1, 2:1, 3:0, 7:float('nan'), 9:float('nan'),'':float('nan')}) # everyday, some days, not at all, refused, don't know, missing
         
+        df[smoker_history_col] = df['SMQ020'].replace(binary_response_dict) # > 100 cigarettes in life
+        
         # drop unnecessary cols
-        df.drop(NHANES_transformations[smoker_col], axis=1, inplace=True, errors='ignore')
+        df.drop(NHANES_transformations[smoker_col] + 
+                NHANES_transformations[smoker_history_col], axis=1, inplace=True, errors='ignore')
 
     if 'BMX_H.xpt' in dataset_path: # body measures (BMI)
         df[bmi_col] = df['BMXBMI']

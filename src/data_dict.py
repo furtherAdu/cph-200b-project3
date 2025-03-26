@@ -28,6 +28,7 @@ light_col = 'ambient_light'
 
 diabetes_col = 'diabetes'
 depression_col = 'depression'
+cvd_col = 'CVD'
 mh_drug_col = '_'.join(mh_drug_categories)
 gc_drug_col = gc_drug_categories[0]
 sleep_troubles_col = 'sleep_troubles'
@@ -42,8 +43,12 @@ age_col = 'age'
 smoker_col = 'smoker'
 smoker_recent_col = f'{smoker_col}_recent'
 smoker_current_col = f'{smoker_col}_current'
+smoker_history_col = f'{smoker_col}_hx'
+alcohol_col = 'yearly_alcohol'
 bmi_col = 'BMI'
 income_col = 'poverty_ratio'
+marital_col = 'martial_status'
+insurance_col = 'health_insurance'
     
 # dict of column to NHANES transformation variables 
 NHANES_transformations = {
@@ -56,6 +61,7 @@ NHANES_transformations = {
     diabetes_col:["DIQ300D","DIQ300S","DIQ175H"],
     depression_col:PHQ_9_cols,
     mh_drug_col:['RXDDRGID', 'RXDUSE'],
+    cvd_col:["MCQ160B","MCQ160C","MCQ160E","MCQ160D","MCQ160F"],
     sleep_troubles_col:['SLQ060', 'SLQ050'],
         
     physical_activity_col:['PAQ620','PAQ665','PAQ605','PAQ650'],
@@ -66,8 +72,12 @@ NHANES_transformations = {
     gender_col:['RIAGENDR'],
     age_col:['RIDAGEYR'],
     smoker_col:['SMQ040', 'SMQ681'],
+    smoker_history_col: ['SMQ020'],
     bmi_col:['BMXBMI'],
-    income_col:['INDFMPIR']
+    income_col:['INDFMPIR'],
+    marital_col:['DMDMARTL'],
+    insurance_col:['HIQ011'],
+    alcohol_col: ['ALQ130', 'ALQ120Q']
 }
 
 NHANES_nan_fill = {
