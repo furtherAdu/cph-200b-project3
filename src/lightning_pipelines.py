@@ -57,11 +57,18 @@ def DragonNet_training_pipeline(**kwargs):
     wandb_kwargs = kwargs.get('wandb_kwargs', {})
     raw_data = kwargs.get('raw_data')
     target_reg = kwargs.get('target_reg')
+    n_treatment_groups = kwargs.get('n_treatment_groups', 2)
+    max_epochs = kwargs.get('max_epochs')
+    features_to_standardize = kwargs.get('features_to_standardize', [])
+    learning_rate = kwargs.get('learning_rate', 1e-3)
+    patience = kwargs.get('patience', 10)
+
     
     # set up data module
     datamodule = XYTDataModule(treatment_col=treatment_col,
                                 outcome_col=outcome_col,
                                 input_features=input_features,
+                                features_to_standardize=features_to_standardize,
                                 dataset_name=dataset_name,
                                 raw_data=raw_data)
 
@@ -69,7 +76,9 @@ def DragonNet_training_pipeline(**kwargs):
     model = DragonNetLightning(input_features=input_features,
                                 alpha=alpha,
                                 beta=beta,
-                                target_reg=target_reg)
+                                target_reg=target_reg,
+                                n_treatment_groups=n_treatment_groups,
+                                learning_rate=learning_rate)
 
     # get log dir
     log_dir_path = get_log_dir_path(model_name)
@@ -81,7 +90,11 @@ def DragonNet_training_pipeline(**kwargs):
     logger = get_logger(model_name=model_name, **wandb_kwargs)
 
     # get trainer
-    trainer = get_trainer(model_name, checkpoint_callback, logger=logger)
+    trainer = get_trainer(model_name, 
+                          checkpoint_callback, 
+                          logger=logger, 
+                          max_epochs=max_epochs,
+                          patience=patience)
 
     print("Training model")
     trainer.fit(model, datamodule)

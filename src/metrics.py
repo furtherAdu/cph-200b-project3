@@ -1,31 +1,5 @@
 import torch
-from lifelines.utils import concordance_index
 import torch.nn.functional as F
-
-
-def evaluate_c_index(data, patient_km_fits, time_col, event_col):
-    """
-    Evaluates the performance of the nearest-neighbor KM estimator using the C-index.
-
-    Args:
-        data: Pandas DataFrame containing patient data.
-        patient_km_fits: Dictionary of KaplanMeierFitter objects returned by nearest_neighbor_km.
-        time_col: Name of the column representing time-to-event.
-        event_col: Name of the column representing the event indicator.
-
-    Returns:
-        The C-index.
-    """
-
-    true_times = data[time_col].values
-    true_events = data[event_col].values
-    predicted_median_survival_times = []
-
-    for i in range(len(data)):
-        kmf = patient_km_fits[i]
-        predicted_median_survival_times.append(kmf.median_survival_time_)
-
-    return concordance_index(true_times, predicted_median_survival_times, true_events)
 
 def mmd(x, y): # linear MMD
     k_xx = torch.mm(x, x.t())
@@ -40,16 +14,46 @@ def log_loss(y_pred, Y, eps=1e-8):
     log_loss =  Y * torch.log(y_pred + eps) + (1 - Y) * torch.log(1 - y_pred + eps)
     return -log_loss
 
-def targeted_regularization_loss(y1, y0, t, Y, T, eps, beta=1.0):
-    y_pred = y1 * T + y0 * (1 - T)
-    q_tilde = y_pred + eps * ((T / t) - (1 - T)/(1 - t))
-    gamma = (Y - q_tilde).pow(2)
+def targeted_regularization_loss(ys, t, Y, T, eps, beta=1.0):
+    # y_pred = y1 * T + y0 * (1 - T)
+    # q_tilde = y_pred + eps * ((T / t) - (1 - T)/(1 - t))
+    T_one_hot = F.one_hot(T.long(), num_classes=len(ys))
+    Y_one_hot = F.one_hot(Y.long(), num_classes=len(ys))
+    
+    y_pred = torch.stack([y * (T==k) for k,y in ys.items()]).argmax(dim=1, keepdim=True)
+    
+    q_tilde = y_pred + eps * (T_one_hot / t) - (1-T_one_hot)/(1-t)
+    gamma = (Y_one_hot- q_tilde).pow(2)
     targeted_regularization_loss = beta * gamma.mean()
+    
+    print('Targeted regularization loss:', targeted_regularization_loss.item())
+    
     return targeted_regularization_loss
 
-def dragonnet_loss(y1, y0, t, Y, T, alpha=1.0):
-    y_pred = y1 * T + y0 * (1 - T)
-    outcome_loss = F.mse_loss(y_pred, Y)
-    treatment_loss = F.binary_cross_entropy(t, T)
+def dragonnet_loss(ys, t, Y, T, alpha=1.0):
+    # y_pred = y1 * T + y0 * (1 - T)
+    outcome_loss = mse_loss(ys, Y, T)
+    
+    if len(ys) == 2:
+        treatment_loss = F.binary_cross_entropy(t, T.long())
+    else:
+        T_one_hot = F.one_hot(T.long(), num_classes=len(ys))
+        treatment_loss = F.cross_entropy(t, T_one_hot)
+        
     dragonnet_loss = outcome_loss + alpha * treatment_loss 
     return dragonnet_loss
+
+def mse_loss(self, ys, Y, T):
+    
+    y_pred = torch.stack([y * (T==k) for k,y in ys.items()]).sum(1)
+
+    if self.continuous_outcome:
+        mse_loss = F.mse_loss(y_pred, Y)
+    else:
+        Y_one_hot = F.one_hot(Y.long(), num_classes=len(ys))
+        mse_loss = F.mse_loss(y_pred, Y_one_hot)
+        
+    return mse_loss
+
+
+

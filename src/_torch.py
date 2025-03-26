@@ -67,34 +67,41 @@ class CounterfactualRegressionTorch(nn.Module):
     
 
 class DragonNetTorch(nn.Module):
-    def __init__(self, input_dim, sr_hidden_dim=200, co_hidden_dim=100, dropout_rate=0.2):
+    def __init__(self, input_dim, sr_hidden_dim=200, co_hidden_dim=100, n_treatment_groups=2):
         super().__init__()
+        
+        self.n_treatment_groups = n_treatment_groups
 
         self.shared_representation = CFR_RepresentationNetwork(input_dim, sr_hidden_dim)
 
-        self.outcome_head_t1 = nn.Sequential(
-            nn.Linear(sr_hidden_dim, co_hidden_dim // 2),
-            nn.ELU(),
-            nn.Linear(co_hidden_dim // 2, 1)
-        )
+        self.outcome_heads = nn.ModuleDict({
+            str(k): nn.Sequential(
+                    nn.Linear(sr_hidden_dim, co_hidden_dim // 2),
+                    nn.ELU(),
+                    nn.Linear(co_hidden_dim // 2, 1)
+                ) 
+             for k in range(self.n_treatment_groups)})
 
-        self.outcome_head_t0 = nn.Sequential(
-            nn.Linear(sr_hidden_dim, co_hidden_dim // 2),
-            nn.ELU(),
-            nn.Linear(co_hidden_dim // 2, 1)
-        )
-
+        # set treatment head params in binary or multi-treatment case
+        if self.n_treatment_groups == 2:
+            treatment_head_out = 1 
+            activation = [nn.Sigmoid()]
+        else:
+            treatment_head_out = self.n_treatment_groups
+            activation = [nn.Softmax(dim=1)] # alternatively, [] # unnormalized logits
+            
         self.treatment_head = nn.Sequential(
-            nn.Linear(sr_hidden_dim, 1),
-            nn.Sigmoid()
+            nn.Linear(sr_hidden_dim, treatment_head_out),
+            *activation
         )
+        
+        self.epsilon = nn.Linear(1,1)
                 
         self.double()
 
     def forward(self, x):
         shared_representation = self.shared_representation(x)
-        y1_hat = self.outcome_head_t1(shared_representation)
-        y0_hat = self.outcome_head_t0(shared_representation)
+        ys_hat = {k: self.outcome_heads[str(k)](shared_representation) for k in range(self.n_treatment_groups)}
         t_hat = self.treatment_head(shared_representation)
-        
-        return {'y1':y1_hat, 'y0':y0_hat, 't':t_hat}
+        eps = self.epsilon(torch.ones_like(t_hat)[:, 0:1])
+        return {'ys':ys_hat, 't':t_hat, 'eps':eps}

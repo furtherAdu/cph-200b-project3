@@ -1,8 +1,10 @@
 import gc
 import os
 from collections import defaultdict
+import itertools
 import torch
 from torch import nn
+import torch.nn.functional as F
 from torch import optim
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import CSVLogger
@@ -10,14 +12,13 @@ from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 
 from src._torch import CounterfactualRegressionTorch, DragonNetTorch
 from src.directory import log_dir
-from src.metrics import mmd, targeted_regularization_loss, dragonnet_loss
 from sklearn.manifold import TSNE
 import matplotlib.pyplot as plt
 
 pl.seed_everything(40)
 
 
-def get_trainer(model_name, checkpoint_callback, monitor='val_loss', mode='min', max_epochs=100, **kwargs):
+def get_trainer(model_name, checkpoint_callback, monitor='val_loss', mode='min', max_epochs=100, patience=5, **kwargs):
     # set up logging
     logger = CSVLogger(save_dir=log_dir, name=model_name)
 
@@ -26,7 +27,7 @@ def get_trainer(model_name, checkpoint_callback, monitor='val_loss', mode='min',
         accelerator='auto',
         logger=logger,
         callbacks=[
-            EarlyStopping(monitor=monitor, mode=mode, patience=5),
+            EarlyStopping(monitor=monitor, mode=mode, patience=patience),
             checkpoint_callback
         ],
         log_every_n_steps=1,
@@ -279,7 +280,8 @@ class DragonNetLightning(pl.LightningModule):
                  alpha=1.0,
                  beta=1.0,
                  learning_rate=1e-5,
-                 target_reg=False):
+                 target_reg=False,
+                 n_treatment_groups=2):
         super().__init__()
         self.save_hyperparameters()
 
@@ -291,6 +293,7 @@ class DragonNetLightning(pl.LightningModule):
         self.sr_hidden_dim = sr_hidden_dim
         self.co_hidden_dim = co_hidden_dim
         self.target_reg = target_reg
+        self.n_treatment_groups = n_treatment_groups
         
         # structures to hold outputs/metrics
         self.outputs = defaultdict(list)
@@ -298,10 +301,8 @@ class DragonNetLightning(pl.LightningModule):
 
         self.model = DragonNetTorch(input_dim=self.input_dim,
                                     sr_hidden_dim=self.sr_hidden_dim,
-                                    co_hidden_dim=self.co_hidden_dim)
-        
-        if self.target_reg:
-            self.epsilon = nn.Parameter(torch.randn(1) / 10, requires_grad=True)
+                                    co_hidden_dim=self.co_hidden_dim,
+                                    n_treatment_groups=self.n_treatment_groups)
         
         # init weights
         self.model.apply(self.init_weights)
@@ -310,8 +311,12 @@ class DragonNetLightning(pl.LightningModule):
         return self.model(x,t)
 
     def configure_optimizers(self):
-        optimizer = optim.SGD(self.parameters(), lr=self.learning_rate, momentum=.9)
-        return optimizer
+        optimizer = optim.Adam(self.parameters(), lr=self.learning_rate)
+        # scheduler = optim.lr_scheduler.LinearLR(optimizer, start_factor=10, total_iters=10)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5)
+        # scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=.9)
+        # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 20)
+        return {'optimizer': optimizer, 'scheduler': scheduler}
 
     @staticmethod
     def safely_to_numpy(tensor):
@@ -325,41 +330,79 @@ class DragonNetLightning(pl.LightningModule):
     @staticmethod
     def get_model_input(batch):
         return batch['X'].squeeze(dim=1).double(), batch['Y'].double(), batch['T'].double()
+    
+    @staticmethod
+    def clip_epsilon(epsilon, min_val=1e-5, max_val=1.0):
+        return torch.clamp(epsilon, min_val, max_val)   
 
-    def get_losses(self, y1, y0, t, Y, T):
-        y1 = y1.squeeze()
-        y0 = y0.squeeze()
+    def get_losses(self, ys, t, Y, T, eps):
+        ys = {k: y.squeeze() for k, y in ys.items()}
         t = t.squeeze()
         Y = Y.squeeze()
         T = T.squeeze()
+        eps = eps.squeeze()
         
-        dragon_net_loss = dragonnet_loss(y1, y0, t, Y, T, alpha=self.alpha)
+        dragon_net_loss = self.dragonnet_loss(ys, t, Y, T, alpha=self.alpha)
         if self.target_reg:
-            target_reg_loss = targeted_regularization_loss(y1, y0, t, Y, T, eps=self.epsilon, beta=self.beta)
+            target_reg_loss = self.targeted_regularization_loss(ys, t, Y, T, 
+                                                           eps=eps,
+                                                           beta=self.beta)
         else:
             target_reg_loss = torch.Tensor([0])
         loss = dragon_net_loss + target_reg_loss
-        return {'loss': loss, 'dragon_net_loss': dragon_net_loss, 'targeted_regularization_loss':target_reg_loss}
+        outcome_model_mse = self.mse_loss(ys, Y, T)
+        
+        losses = {'loss': loss, 
+                  'dragon_net_loss': dragon_net_loss,
+                  'targeted_regularization_loss':target_reg_loss,
+                  'outcome_model_mse':outcome_model_mse}
+        
+        return losses
+
+    def targeted_regularization_loss(self, ys, t, Y, T, eps, beta=1.0):
+        n_treatments = len(ys)
+        t = torch.clamp(t, min=.01, max=.99) # clamp value to avoid nan loss
+        T_onehot = F.one_hot(T.long(), num_classes=n_treatments).float()
+        y_pred = torch.stack([y * (T==k) for k,y in ys.items()], dim=1).sum(1) 
+        h = (T_onehot / t).sum(1) - (((1 - T_onehot) / (1 - t)) * (1 - T_onehot)).sum(1)
+        q_tilde = y_pred + eps * h
+        gamma = (Y - q_tilde).pow(2)
+        targeted_regularization_loss = beta * gamma.mean()    
+        return targeted_regularization_loss
+    
+    def dragonnet_loss(self, ys, t, Y, T, alpha=1.0):
+        t = torch.clamp(t, min=.01, max=.99)
+        outcome_loss = self.mse_loss(ys, Y, T)
+        cross_entropy = F.binary_cross_entropy if len(ys) == 2 else F.cross_entropy
+        treatment_loss = cross_entropy(t, T.long())
+        dragonnet_loss = outcome_loss + alpha * treatment_loss 
+        return dragonnet_loss
+
+    def mse_loss(self, ys, Y, T):
+        y_pred = torch.stack([y * (T==k) for k,y in ys.items()], dim=1) # y_pred in real number line
+        mse_loss = F.mse_loss(y_pred.sum(1), Y)      
+        return mse_loss
     
     def step(self, batch, batch_idx, stage):
         X, Y, T = self.get_model_input(batch)
         
         # get outputs
         out = self.model(X)
-        t, y0, y1 = out['t'], out['y0'], out['y1']
+        t, ys, eps = out['t'], out['ys'], out['eps']
         
         # get loss
-        losses = self.get_losses(y1, y0, t, Y, T)
+        losses = self.get_losses(ys, t, Y, T, eps)
         loss = losses['loss']
         dragon_net_loss = losses['dragon_net_loss']
         target_reg_loss = losses['targeted_regularization_loss']
+        outcome_model_mse = losses['outcome_model_mse']
         
         # store outputs
-        self.outputs[stage].append({'y0':y0,
-                                    'y1':y1,
+        self.outputs[stage].append({'ys':ys,
                                     't':t,
                                     'T':T,
-                                    'Y':Y})
+                                    'Y':Y,
+                                    'eps':eps})
 
         # log metrics
         if stage not in ['predict', 'test']:
@@ -367,35 +410,52 @@ class DragonNetLightning(pl.LightningModule):
             self.log(f'{stage}_dragon_net_loss', dragon_net_loss, **log_kwargs)
             self.log(f'{stage}_target_regularization_loss', target_reg_loss, **log_kwargs)
             self.log(f'{stage}_loss', loss, **log_kwargs)
+            self.log(f'{stage}_outcome_model_mse', outcome_model_mse, **log_kwargs)
 
         return loss
     
     def on_epoch_end(self, stage):
         # concat outputs
-        outputs_vars = ['Y', 'T', 'y1', 'y0', 't']
-        Y, T, y1, y0, t = [torch.cat([o[x] for o in self.outputs[stage]]).squeeze() for x in outputs_vars]
+        outputs_vars = ['Y', 'T', 't', 'eps']
+        Y, T, t, eps = [torch.cat([o[x] for o in self.outputs[stage]]).squeeze() for x in outputs_vars]
+        
+        ys = {}
+        for k in range(self.n_treatment_groups):
+            ys[k] = torch.cat([o['ys'][k] for o in self.outputs[stage]]).squeeze()
         
         # get losses
-        losses = self.get_losses(y1, y0, t, Y, T)
+        losses = self.get_losses(ys, t, Y, T, eps)
         loss = losses['loss']
         dragon_net_loss = losses['dragon_net_loss']
         target_reg_loss = losses['targeted_regularization_loss']
+        outcome_model_mse = losses['outcome_model_mse']
         
-         # exclude data points with propensity score outside [.01,.99]
+        # exclude data points with propensity score outside [.01,.99]
         included = (.01 <= t).squeeze() * (t <= .99).squeeze()
-        y0 = y0[included]
-        y1 = y1[included]
+        if self.n_treatment_groups > 2:
+            included = included.prod(1)
+        ys = torch.stack([v for _,v in ys.items()], dim=1)        
+        ys = ys[included]
         T = T[included]
 
-        # calculate performance metrics
-        tau = (y1 - y0).mean()
-
+        # update metrics with losses
         metric_dict = {
-            f'{stage}_tau': tau,
             f'{stage}_loss': loss,
             f'{stage}_dragon_net_loss': dragon_net_loss,
-            f'{stage}_targeted_regularization_loss': target_reg_loss
+            f'{stage}_targeted_regularization_loss': target_reg_loss,
+            f'{stage}_outcome_model_mse': outcome_model_mse
         }
+        
+        # update metrics with performance metrics
+        treatment_classes = self.trainer.datamodule.treatment_classes
+        n_treatment_classes = len(treatment_classes)
+        tau_results = {}
+        for i in range(n_treatment_classes):
+            for j in range(i + 1, n_treatment_classes):
+                tau_diff = ys[:, j] - ys[:, i]
+                tau_results[f"{stage}_tau_{treatment_classes[j]} vs {treatment_classes[i]}"] = tau_diff.mean().item()
+                
+        metric_dict.update(tau_results)
 
         if stage not in ['predict']:  # log metrics
             log_kwargs = dict(prog_bar=True, sync_dist=True)
