@@ -286,8 +286,8 @@ def get_NHANES_questionnaire_df(vars_lookup_df, dataset_path, columns, index='SE
                           "MCQ160E", # Ever told you had heart attack
                           "MCQ160D", # Ever told you had angina/angina pectoris
                           "MCQ160F"] # Ever told you had a stroke
-                         ].sum(axis=1, min_count=1)
-        df[cvd_col].apply(lambda x: 1 if x > 0 else x)
+                         ].replace(binary_response_dict).sum(axis=1, min_count=1)
+        df[cvd_col] = df[cvd_col].apply(lambda x: 1 if x > 0 else x)
         
         # drop unnecessary cols
         df.drop(NHANES_transformations[cvd_col], axis=1, inplace=True)
