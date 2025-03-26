@@ -15,6 +15,7 @@ SBP_cutoff = 130
 A1c_cutoff = 6.5
 PHQ_9_cuttoffs = [0,4,14,27] # minimal, mild/moderate, moderately severe/severe
 sleep_deprivation_cutoffs = [0,5,7,24] # severe moderate, normal
+age_cutoff = 35
 
 # set aggregated column names
 htn_col = 'HTN'
@@ -103,3 +104,32 @@ NHANES_nan_fill = {
     bmi_col:float('nan'),
     income_col:float('nan'),
 }
+
+# define column data types
+categorical_cols = [
+       physical_activity_col,
+       mh_drug_col, 
+       gc_drug_col,
+       sleep_troubles_col,
+       sleep_deprivation_col,
+       diabetes_col,
+       smoker_col,
+       smoker_history_col,
+       race_ethnicity_col,
+       gender_col,
+       htn_col,
+       cvd_col,
+       marital_col,
+       insurance_col,
+]
+
+numerical_cols = [
+       depression_col,
+       sedentary_col,
+       accelerometer_col,
+       bmi_col,
+       age_col,
+       income_col,
+       diastolic_col,
+       systolic_col
+]
