@@ -207,13 +207,15 @@ def get_NHANES_questionnaire_df(vars_lookup_df, dataset_path, columns, index='SE
         # drop unnecessary cols
         df.drop(NHANES_transformations[htn_exam_col], axis=1, inplace=True)
         
-    if 'BPQ_H.xpt' in dataset_path: # blood pressure prescription self-reported        
+    if 'BPQ_H.xpt' in dataset_path: # blood pressure prescription and dx self-reported        
         df['BPQ040A'].replace(binary_response_dict, inplace=True) # taking HTN prescription
         df['BPQ050A'].replace(binary_response_dict, inplace=True) # taking high BP prescription
-        
+
         df[htn_prescription_col] = df[['BPQ040A', 'BPQ050A']].sum(axis=1, min_count=1)
         df[htn_prescription_col] = df[htn_prescription_col].apply(lambda x: 1 if x > 0 else x)
         
+        df['BPQ020'].replace(binary_response_dict, inplace=True) # gotten HTN dx
+
         # drop unnecessary cols
         df.drop(NHANES_transformations[htn_prescription_col], axis=1, inplace=True)
         
@@ -419,7 +421,7 @@ def preprocess_NHANES(exclude: list, q_name='Questionnaire'):
         i += 1
     
     # combine variables
-    htn_cols = [htn_exam_col, htn_interview_col, htn_prescription_col]
+    htn_cols = [htn_exam_col, htn_interview_col, htn_prescription_col, htn_dx_col]
     smoker_cols = [smoker_recent_col, smoker_current_col]
     
     for main_col, sub_cols in [(htn_col, htn_cols), 

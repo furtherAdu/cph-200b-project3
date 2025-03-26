@@ -21,6 +21,7 @@ htn_col = 'HTN'
 htn_interview_col = f'{htn_col}_interview'
 htn_exam_col = f'{htn_col}_exam'
 htn_prescription_col = f'{htn_col}_prescription'
+htn_dx_col = f'{htn_col}_diagnosis'
 systolic_col = 'SBP'
 diastolic_col = 'DBP'
 sleep_deprivation_col = 'sleep_deprivation'
@@ -54,6 +55,7 @@ insurance_col = 'health_insurance'
 NHANES_transformations = {
     htn_interview_col:['DIQ280','DIQ070','DIQ050','DIQ010'],
     htn_prescription_col:['BPQ040A','BPQ050A'],
+    htn_dx_col: ['BPQ020'],
     htn_exam_col:['PEASCST1','BPXSY1','BPXSY2','BPXSY3','BPXSY4','BPXDI1','BPXDI2','BPXDI3','BPXDI4'],
     sleep_deprivation_col:['SLD010H'],
     light_col:['PAXPREDM', 'PAXLXMM'],

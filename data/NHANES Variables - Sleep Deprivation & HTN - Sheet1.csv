@@ -15,6 +15,7 @@ BPXSY4,Systolic: Blood pres (4th rdg) mm Hg,Systolic: Blood pressure (fourth rea
 PEASCST1,Blood Pressure Status,Blood Pressure Status,Blood Pressure (BPX_H),2013-2014 Examination,BloodPressure
 BPQ040A,Taking prescription for hypertension,"Because of {your/SP's} (high blood pressure/hypertension), {have you/has s/he} ever been told to . . . take prescribed medicine?",Blood Pressure & Cholesterol (BPQ_H),2013-2014 Questionnaire,BloodPressure
 BPQ050A,Now taking prescribed medicine for HBP,HELP AVAILABLE (Are you/Is SP) now taking prescribed medicine,Blood Pressure & Cholesterol (BPQ_H),2013-2014 Questionnaire,BloodPressure
+BPQ020,Ever told you had high blood pressure,"{Have you/Has SP} ever been told by a doctor or other health professional that {you/s/he} had hypertension, also called high blood pressure?",Blood Pressure & Cholesterol (BPQ_H),2013-2014 Questionnaire,BloodPressure
 DIQ300D,What was your recent DBP,Blood pressure is usually given as one number over another. What was {your/SP's} most recent blood pressure in numbers?,Diabetes (DIQ_H),2013-2014 Questionnaire,BloodPressure
 DIQ300S,What was your recent SBP,Blood pressure is usually given as one number over another. What was {your/SP's} most recent blood pressure in numbers?,Diabetes (DIQ_H),2013-2014 Questionnaire,BloodPressure
 DIQ175H,High blood pressure,Why {Do you/Does SP} think {you are/he is/she is} at risk for diabetes or prediabetes? [Anything else?],Diabetes (DIQ_H),2013-2014 Questionnaire,BloodPressure
