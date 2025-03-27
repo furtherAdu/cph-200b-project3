@@ -104,4 +104,4 @@ class DragonNetTorch(nn.Module):
         ys_hat = {k: self.outcome_heads[str(k)](shared_representation) for k in range(self.n_treatment_groups)}
         t_hat = self.treatment_head(shared_representation)
         eps = self.epsilon(torch.ones_like(t_hat)[:, 0:1])
-        return {'ys':ys_hat, 't':t_hat, 'eps':eps}
+        return {'ys':ys_hat, 't':t_hat, 'eps':eps, 'phi_x': shared_representation}

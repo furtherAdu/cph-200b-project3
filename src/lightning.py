@@ -388,7 +388,7 @@ class DragonNetLightning(pl.LightningModule):
         
         # get outputs
         out = self.model(X)
-        t, ys, eps = out['t'], out['ys'], out['eps']
+        t, ys, eps, phi_x = out['t'], out['ys'], out['eps'], out['phi_x']
         
         # get loss
         losses = self.get_losses(ys, t, Y, T, eps)
@@ -402,7 +402,9 @@ class DragonNetLightning(pl.LightningModule):
                                     't':t,
                                     'T':T,
                                     'Y':Y,
-                                    'eps':eps})
+                                    'eps':eps,
+                                    'X':X,
+                                    'phi_x':phi_x})
 
         # log metrics
         if stage not in ['predict', 'test']:
@@ -416,12 +418,15 @@ class DragonNetLightning(pl.LightningModule):
     
     def on_epoch_end(self, stage):
         # concat outputs
-        outputs_vars = ['Y', 'T', 't', 'eps']
-        Y, T, t, eps = [torch.cat([o[x] for o in self.outputs[stage]]).squeeze() for x in outputs_vars]
+        outputs_vars = ['X', 'Y', 'T', 't', 'eps', 'phi_x']
+        X, Y, T, t, eps, phi_x = [torch.cat([o[x] for o in self.outputs[stage]]).squeeze() for x in outputs_vars]
         
         ys = {}
         for k in range(self.n_treatment_groups):
             ys[k] = torch.cat([o['ys'][k] for o in self.outputs[stage]]).squeeze()
+            
+        # get tSNE embeedings
+        self.get_tsne_embedddings(stage, X, phi_x, T)
         
         # get losses
         losses = self.get_losses(ys, t, Y, T, eps)
@@ -468,6 +473,30 @@ class DragonNetLightning(pl.LightningModule):
 
         # clean space
         gc.collect()
+    
+    def get_tsne_embedddings(self, stage, X, phi_x, T):
+        # get t-SNE embeddings
+        embeddings = {}
+        for x_name, x in dict(zip(['X', 'phi_x'], [X, phi_x])).items():
+            embeddings[x_name] = TSNE(random_state=40).fit_transform(x)
+        
+        if self.logger.experiment and stage not in ['train']:
+            for k, embedding in embeddings.items():
+                # get plot name
+                target_reg_str = {True:'_target_reg', False:''}
+                key = f'tSNE {k}, DragonNet{target_reg_str[self.target_reg]}, epoch{self.current_epoch}'
+                
+                # make figure
+                fig = plt.figure(figsize=(10, 8))
+                ax = plt.scatter(embedding[:, 0], embedding[:, 1], c=T)
+                plt.colorbar(ax, label='treatment')
+                plt.title(key)
+                                
+                # log figure
+                self.logger.log_image(key=key, images=[fig])
+                
+                # suppress displaying
+                plt.close(fig)
         
     def training_step(self, batch, batch_idx):
         return self.step(batch, batch_idx, "train")
