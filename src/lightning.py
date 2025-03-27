@@ -12,6 +12,7 @@ from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 
 from src._torch import CounterfactualRegressionTorch, DragonNetTorch
 from src.directory import log_dir
+from src.metrics import balanced_accuracy
 from sklearn.manifold import TSNE
 import matplotlib.pyplot as plt
 
@@ -313,10 +314,10 @@ class DragonNetLightning(pl.LightningModule):
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=self.learning_rate)
         # scheduler = optim.lr_scheduler.LinearLR(optimizer, start_factor=10, total_iters=10)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5)
+        # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5)
         # scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=.9)
         # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 20)
-        return {'optimizer': optimizer, 'scheduler': scheduler}
+        return optimizer
 
     @staticmethod
     def safely_to_numpy(tensor):
@@ -351,11 +352,13 @@ class DragonNetLightning(pl.LightningModule):
             target_reg_loss = torch.Tensor([0])
         loss = dragon_net_loss + target_reg_loss
         outcome_model_mse = self.mse_loss(ys, Y, T)
+        propensity_model_bal_acc = balanced_accuracy(t, T)
         
         losses = {'loss': loss, 
                   'dragon_net_loss': dragon_net_loss,
                   'targeted_regularization_loss':target_reg_loss,
-                  'outcome_model_mse':outcome_model_mse}
+                  'outcome_model_mse':outcome_model_mse,
+                  'propensity_model_bal_acc':propensity_model_bal_acc}
         
         return losses
 
@@ -406,9 +409,6 @@ class DragonNetLightning(pl.LightningModule):
         # get loss
         losses = self.get_losses(ys, t, Y, T, eps)
         loss = losses['loss']
-        dragon_net_loss = losses['dragon_net_loss']
-        target_reg_loss = losses['targeted_regularization_loss']
-        outcome_model_mse = losses['outcome_model_mse']
         
         # store outputs
         self.outputs[stage].append({'ys':ys,
@@ -422,10 +422,7 @@ class DragonNetLightning(pl.LightningModule):
         # log metrics
         if stage not in ['predict', 'test']:
             log_kwargs = dict(prog_bar=True, sync_dist=True)
-            self.log(f'{stage}_dragon_net_loss', dragon_net_loss, **log_kwargs)
-            self.log(f'{stage}_target_regularization_loss', target_reg_loss, **log_kwargs)
-            self.log(f'{stage}_loss', loss, **log_kwargs)
-            self.log(f'{stage}_outcome_model_mse', outcome_model_mse, **log_kwargs)
+            self.log_dict({f'{stage}_{k}':v for k,v in losses.items()}, **log_kwargs)
 
         return loss
     
@@ -443,18 +440,9 @@ class DragonNetLightning(pl.LightningModule):
         
         # get losses
         losses = self.get_losses(ys, t, Y, T, eps)
-        loss = losses['loss']
-        dragon_net_loss = losses['dragon_net_loss']
-        target_reg_loss = losses['targeted_regularization_loss']
-        outcome_model_mse = losses['outcome_model_mse']
         
         # update metrics with losses
-        metric_dict = {
-            f'{stage}_loss': loss,
-            f'{stage}_dragon_net_loss': dragon_net_loss,
-            f'{stage}_targeted_regularization_loss': target_reg_loss,
-            f'{stage}_outcome_model_mse': outcome_model_mse
-        }
+        metric_dict = {f'{stage}_{k}':v for k,v in losses.items()}
         
         # exclude data points with propensity score outside [.01,.99] for ATE estimation
         included = (.01 <= t).squeeze() * (t <= .99).squeeze()
