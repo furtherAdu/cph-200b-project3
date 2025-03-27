@@ -336,7 +336,7 @@ class DragonNetLightning(pl.LightningModule):
         return torch.clamp(epsilon, min_val, max_val)   
 
     def get_losses(self, ys, t, Y, T, eps):
-        ys = {k: y.squeeze() for k, y in ys.items()}
+        ys = torch.stack([y.squeeze() for k,y in ys.items()], dim=1)
         t = t.squeeze()
         Y = Y.squeeze()
         T = T.squeeze()
@@ -360,15 +360,26 @@ class DragonNetLightning(pl.LightningModule):
         return losses
 
     def targeted_regularization_loss(self, ys, t, Y, T, eps, beta=1.0):
-        n_treatments = len(ys)
-        t = torch.clamp(t, min=.01, max=.99) # clamp value to avoid nan loss
-        T_onehot = F.one_hot(T.long(), num_classes=n_treatments).float()
-        y_pred = torch.stack([y * (T==k) for k,y in ys.items()], dim=1).sum(1) 
-        h = (T_onehot / t).sum(1) - (((1 - T_onehot) / (1 - t)) * (1 - T_onehot)).sum(1)
-        q_tilde = y_pred + eps * h
+        q_tilde = self.get_targeted_outcome(ys, t, T, eps)
         gamma = (Y - q_tilde).pow(2)
         targeted_regularization_loss = beta * gamma.mean()    
         return targeted_regularization_loss
+    
+    def get_targeted_outcome(self, ys, t, T, eps):
+        n_treatments = ys.size(1)
+        T_onehot = F.one_hot(T.long(), num_classes=n_treatments).float()
+        t = torch.clamp(t, min=.01, max=.99) # clamp value to avoid nan loss
+        h = self.get_h(t,T)
+        y_pred = (ys * T_onehot).sum(1) 
+        q_tilde = y_pred + eps * h
+        return q_tilde
+    
+    @staticmethod
+    def get_h(t, T):
+        n_treatments = t.size(1)
+        T_onehot = F.one_hot(T.long(), num_classes=n_treatments).float()
+        h = (T_onehot / t).sum(1) - (((1 - T_onehot) / (1 - t)) * (1 - T_onehot)).sum(1)
+        return h
     
     def dragonnet_loss(self, ys, t, Y, T, alpha=1.0):
         t = torch.clamp(t, min=.01, max=.99)
@@ -379,8 +390,10 @@ class DragonNetLightning(pl.LightningModule):
         return dragonnet_loss
 
     def mse_loss(self, ys, Y, T):
-        y_pred = torch.stack([y * (T==k) for k,y in ys.items()], dim=1) # y_pred in real number line
-        mse_loss = F.mse_loss(y_pred.sum(1), Y)      
+        n_treatments = ys.size(1)
+        T_onehot = F.one_hot(T.long(), num_classes=n_treatments).float()
+        y_pred = (ys * T_onehot).sum(1)
+        mse_loss = F.mse_loss(y_pred, Y)      
         return mse_loss
     
     def step(self, batch, batch_idx, stage):
@@ -435,14 +448,6 @@ class DragonNetLightning(pl.LightningModule):
         target_reg_loss = losses['targeted_regularization_loss']
         outcome_model_mse = losses['outcome_model_mse']
         
-        # exclude data points with propensity score outside [.01,.99]
-        included = (.01 <= t).squeeze() * (t <= .99).squeeze()
-        if self.n_treatment_groups > 2:
-            included = included.prod(1)
-        ys = torch.stack([v for _,v in ys.items()], dim=1)        
-        ys = ys[included]
-        T = T[included]
-
         # update metrics with losses
         metric_dict = {
             f'{stage}_loss': loss,
@@ -451,17 +456,34 @@ class DragonNetLightning(pl.LightningModule):
             f'{stage}_outcome_model_mse': outcome_model_mse
         }
         
+        # exclude data points with propensity score outside [.01,.99] for ATE estimation
+        included = (.01 <= t).squeeze() * (t <= .99).squeeze()
+        if self.n_treatment_groups > 2:
+            included = included.prod(1)
+        ys = torch.stack([v for _,v in ys.items()], dim=1)        
+        ys = ys[included]
+        T = T[included]
+        
+        # calculate standard error of ATE estimates
+        standard_error = self.calc_ATE_std_error(ys, t, T, Y, eps)
+        
         # update metrics with performance metrics
         treatment_classes = self.trainer.datamodule.treatment_classes
         n_treatment_classes = len(treatment_classes)
         tau_results = {}
+        
         for i in range(n_treatment_classes):
             for j in range(i + 1, n_treatment_classes):
+                
+                # calculate ATE
                 tau_diff = ys[:, j] - ys[:, i]
                 tau_results[f"{stage}_tau_{treatment_classes[j]} vs {treatment_classes[i]}"] = tau_diff.mean().item()
                 
+                # log standard error
+                tau_results[f"{stage}_se_{treatment_classes[j]} vs {treatment_classes[i]}"] = standard_error[f'{j}{i}']
+                
         metric_dict.update(tau_results)
-
+        
         if stage not in ['predict']:  # log metrics
             log_kwargs = dict(prog_bar=True, sync_dist=True)
             self.log_dict(metric_dict, **log_kwargs)
@@ -497,6 +519,21 @@ class DragonNetLightning(pl.LightningModule):
                 
                 # suppress displaying
                 plt.close(fig)
+    
+    def calc_ATE_std_error(self, ys, t, T, Y, eps):
+        n_units = t.size(0)
+        n_treatments = t.size(1)
+        pairs = list(itertools.combinations(range(n_treatments), 2))
+        
+        targeted_outcome = self.get_targeted_outcome(ys, t, T, eps)
+        h = self.get_h(t, T) # inverse probability weights
+        influence_curve = h * (Y - targeted_outcome)
+        CATE = {f'{j}{i}': ys[:,j] - ys[:,i] for i,j in pairs}
+        ATE = {k: v.mean() for k,v in CATE.items()}
+        adjusted_influence_curves = {f'{j}{i}': influence_curve + (CATE[f'{j}{i}'] - ATE[f'{j}{i}']) * (t.argmax(1) == j).float() for i,j in pairs}
+        std_error = {k: (v.std().pow(2) / n_units).pow(.5).item() for k,v in adjusted_influence_curves.items()}
+    
+        return std_error
         
     def training_step(self, batch, batch_idx):
         return self.step(batch, batch_idx, "train")
