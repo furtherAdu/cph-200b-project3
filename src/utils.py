@@ -2,10 +2,14 @@ import os
 import gc
 import re
 import requests
+import itertools
 from urllib.parse import urlparse
 import pyreadstat
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.preprocessing import StandardScaler
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
@@ -288,8 +292,8 @@ def get_NHANES_questionnaire_df(vars_lookup_df, dataset_path, columns, index='SE
                           "MCQ160E", # Ever told you had heart attack
                           "MCQ160D", # Ever told you had angina/angina pectoris
                           "MCQ160F"] # Ever told you had a stroke
-                         ].sum(axis=1, min_count=1)
-        df[cvd_col].apply(lambda x: 1 if x > 0 else x)
+                         ].replace(binary_response_dict).sum(axis=1, min_count=1)
+        df[cvd_col] = df[cvd_col].apply(lambda x: 1 if x > 0 else x)
         
         # drop unnecessary cols
         df.drop(NHANES_transformations[cvd_col], axis=1, inplace=True)
@@ -471,3 +475,213 @@ def download_nhanes_xpt(url_list, download_dir='../data/NHANES'):
                 print(f"Error writing to file {filename}: {e}")
         else:
             print(f"{filename} already exists. Skipping.")
+
+def propensity_score_matching_multiclass(df, treatment_col, covariate_cols, match_ratio=1):
+    """
+    Performs propensity score matching for multiclass treatment.
+
+    Args:
+        df (pd.DataFrame): Input DataFrame with covariates, treatment, and outcome.
+        treatment_col (str): Name of the treatment column.
+        covariate_cols (list): List of column names for covariates.
+        y_col (str, optional): Name of the outcome column. Defaults to None.
+        match_ratio (int, optional): Number of matches per treated unit. Defaults to 1.
+
+    Returns:
+        pd.DataFrame: Matched DataFrame, preserving the original index.
+    """
+
+    treatment_values = df[treatment_col].unique()
+    matched_dfs = []
+
+    # Iterate through all pairwise comparisons of treatment groups.
+    for i in range(len(treatment_values)):
+        for j in range(i + 1, len(treatment_values)):
+            treatment_i = treatment_values[i]
+            treatment_j = treatment_values[j]
+
+            # Subset the DataFrame to include only the two treatment groups.
+            subset_df = df[df[treatment_col].isin([treatment_i, treatment_j])].copy()
+            subset_df["treated"] = (subset_df[treatment_col] == treatment_i).astype(int)
+
+            # Estimate propensity scores.
+            X = subset_df[covariate_cols]
+            y = subset_df["treated"]
+
+            propensity_model = LogisticRegression(solver='lbfgs', max_iter=1000)
+            propensity_model.fit(X, y)
+            propensity_scores = propensity_model.predict_proba(X)[:, 1]
+            subset_df["propensity_score"] = propensity_scores
+
+            # Perform nearest neighbor matching.
+            treated_df = subset_df[subset_df["treated"] == 1]
+            control_df = subset_df[subset_df["treated"] == 0]
+
+            matched_indices = []
+            for treated_index, treated_row in treated_df.iterrows():
+                treated_score = treated_row["propensity_score"]
+                distances = np.abs(control_df["propensity_score"] - treated_score)
+                nearest_indices = distances.nsmallest(match_ratio).index.tolist()
+                matched_indices.extend([(treated_index, control_index) for control_index in nearest_indices])
+
+            # Create matched DataFrame.
+            matched_rows = []
+            for treated_index, control_index in matched_indices:
+                treated_row = subset_df.loc[treated_index].to_dict()
+                control_row = subset_df.loc[control_index].to_dict()
+                matched_rows.append(treated_row)
+                matched_rows.append(control_row)
+
+            matched_df = pd.DataFrame(matched_rows)
+            matched_dfs.append(matched_df)
+
+    # Concatenate all pairwise matched DataFrames.
+    final_matched_df = pd.concat(matched_dfs, ignore_index=False)
+
+    return final_matched_df
+
+def love_plot_multiclass(df, t_col, covariate_names):
+    """
+    Generates a love plot for > 2 treatment classes.
+    """
+
+    X = df[covariate_names]
+    t = df[[t_col]].to_numpy()
+    treatments = df[t_col].unique()
+
+    scaled_X = pd.DataFrame(StandardScaler().fit_transform(X), columns=X.columns, index=X.index)
+
+    smds = []
+    covariate_labels = []
+    comparison_labels = []
+
+    for col in scaled_X.columns:
+        for comp in itertools.combinations(treatments[::-1], 2):
+            mean_t1 = scaled_X[t == comp[0]][col].mean()
+            mean_t2 = scaled_X[t == comp[1]][col].mean()
+            std_t1 = scaled_X[t == comp[0]][col].std()
+            std_t2 = scaled_X[t == comp[1]][col].std()
+            smd = (mean_t1 - mean_t2) / np.sqrt((std_t1**2 + std_t2**2) / 2)
+
+            smds.append(abs(smd))  # Use absolute SMD
+            covariate_labels.append(col)
+            comparison_labels.append(f"{comp[0]} vs {comp[1]}")
+
+    love_df = pd.DataFrame({
+        "Covariate": covariate_labels,
+        "Absolute SMD": smds,
+        "Comparison": comparison_labels
+    })
+
+    # Calculate the sum of absolute SMDs for each covariate
+    covariate_smd_sums = love_df.groupby("Covariate")["Absolute SMD"].sum().sort_values(ascending=False)
+
+    # Sort the DataFrame based on the summed absolute SMDs
+    sorted_covariates = covariate_smd_sums.index.tolist()
+    love_df["Covariate"] = pd.Categorical(love_df["Covariate"], categories=sorted_covariates, ordered=True)
+    love_df = love_df.sort_values("Covariate")
+
+    fig, axs = plt.subplots(figsize=(10, len(X.columns) * 0.6))
+    sns.scatterplot(x="Absolute SMD", y="Covariate", hue="Comparison", data=love_df)
+    plt.axvline(x=0.1, color="red", linestyle="--")  # Common threshold for acceptable balance
+    # sns.move_legend(axs, "lower right")
+    plt.title("Love Plot - Absolute Standardized Mean Differences")
+    plt.show()
+
+def love_plot_multiclass_abs_compare(original_df, matched_df, t_col, covariate_names):
+    """
+    Generates a love plot comparing absolute SMDs for original and matched data.
+    """
+
+    t = original_df[t_col].to_numpy()
+    X = original_df[covariate_names]
+    treatments = original_df[t_col].unique()
+
+    # Scale original covariates
+    scaled_X = pd.DataFrame(StandardScaler().fit_transform(X), columns=X.columns, index=X.index)
+
+    # Calculate SMDs for original data
+    original_smds = []
+    covariate_labels = []
+    comparison_labels = []
+
+    for col in scaled_X.columns:
+        for comp in itertools.combinations(treatments[::-1], 2):
+            mean_t1 = scaled_X[t == comp[0]][col].mean()
+            mean_t2 = scaled_X[t == comp[1]][col].mean()
+            std_t1 = scaled_X[t == comp[0]][col].std()
+            std_t2 = scaled_X[t == comp[1]][col].std()
+            smd = (mean_t1 - mean_t2) / np.sqrt((std_t1**2 + std_t2**2) / 2)
+
+            original_smds.append(abs(smd))
+            covariate_labels.append(col)
+            comparison_labels.append(f"{comp[0]} vs {comp[1]}")
+
+    original_love_df = pd.DataFrame({
+        "Covariate": covariate_labels,
+        "Absolute SMD": original_smds,
+        "Comparison": comparison_labels,
+        "Dataset": "Original"
+    })
+
+    # Calculate SMDs for matched data
+    matched_smds = []
+    matched_covariate_labels = []
+    matched_comparison_labels = []
+
+    # Scale matched covariates
+    matched_covariate_cols = [col for col in matched_df.columns if col in X.columns] # Ensure only relevant columns are scaled
+
+    scaled_matched_X = pd.DataFrame(StandardScaler().fit_transform(matched_df[matched_covariate_cols]), columns=matched_covariate_cols)
+
+    for col in scaled_matched_X.columns:
+        for comp in itertools.combinations(treatments[::-1], 2):
+            # Filter matched_df for the treatment comparison
+            comp_df = matched_df[matched_df[t_col].isin([comp[0], comp[1]])]
+            
+            # Scale the relevant covariates for this comparison
+            scaled_comp_X = pd.DataFrame(StandardScaler().fit_transform(comp_df[matched_covariate_cols]), columns=matched_covariate_cols)
+
+            # Get the treatment values for this comparison
+            t_comp = comp_df[t_col].to_numpy()
+
+            mean_t1 = scaled_comp_X[t_comp == comp[0]][col].mean()
+            mean_t2 = scaled_comp_X[t_comp == comp[1]][col].mean()
+            std_t1 = scaled_comp_X[t_comp == comp[0]][col].std()
+            std_t2 = scaled_comp_X[t_comp == comp[1]][col].std()
+            smd = (mean_t1 - mean_t2) / np.sqrt((std_t1**2 + std_t2**2) / 2)
+
+            matched_smds.append(abs(smd))
+            matched_covariate_labels.append(col)
+            matched_comparison_labels.append(f"{comp[0]} vs {comp[1]}")
+
+    matched_love_df = pd.DataFrame({
+        "Covariate": matched_covariate_labels,
+        "Absolute SMD": matched_smds,
+        "Comparison": matched_comparison_labels,
+        "Dataset": "Matched"
+    })
+
+    # Combine DataFrames
+    combined_love_df = pd.concat([original_love_df, matched_love_df])
+
+    # Calculate the sum of absolute SMDs for each covariate
+    covariate_smd_sums = combined_love_df.groupby("Covariate")["Absolute SMD"].sum().sort_values(ascending=False)
+
+    # Sort the DataFrame based on the summed absolute SMDs
+    sorted_covariates = covariate_smd_sums.index.tolist()
+    combined_love_df["Covariate"] = pd.Categorical(combined_love_df["Covariate"], categories=sorted_covariates, ordered=True)
+    combined_love_df = combined_love_df.sort_values("Covariate")
+
+    # Plotting
+    plt.figure(figsize=(12, len(X.columns) * 0.6))
+    sns.scatterplot(
+        x="Absolute SMD",
+        y="Covariate",
+        hue="Comparison",
+        style="Dataset",  # Use style to differentiate Original/Matched
+        data=combined_love_df,
+    )
+    plt.axvline(x=0.1, color="red", linestyle="--")  # Common threshold for acceptable balance
+    plt.title("Love Plot - Absolute SMD Comparison (Original vs. Matched)")
+    plt.show()

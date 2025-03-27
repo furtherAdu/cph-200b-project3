@@ -3,9 +3,8 @@ import torch
 import pandas as pd
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader
-from src.directory import dataset_paths
 from sklearn.model_selection import train_test_split
-
+from sklearn.preprocessing import StandardScaler
 
 class FromPandasDataset(torch.utils.data.Dataset):
     def __init__(self, dataset):
@@ -28,16 +27,20 @@ class XYTDataModule(pl.LightningDataModule):
             outcome_col='Y',
             input_features=[],
             dataset_name='ihdp',
+            features_to_standardize=[],
             raw_data=None,
             **kwargs):
         super().__init__()
 
-        self.raw_data = pd.read_csv(dataset_paths[dataset_name]) if raw_data is None else raw_data
+        self.raw_data = raw_data
         self.n_samples = len(self.raw_data)
         self.dataset_name = dataset_name
         self.treatment_col = treatment_col
         self.outcome_col = outcome_col
         self.u = None
+        self.treatment_classes = None
+        self.features_to_standardize = features_to_standardize
+        self.scaler = StandardScaler()
 
         self.batch_size = batch_size
         self.num_workers = num_workers
@@ -53,8 +56,14 @@ class XYTDataModule(pl.LightningDataModule):
 
     def setup(self, stage=None):
         self.u = self.raw_data[self.treatment_col].mean()
+        self.treatment_classes = self.raw_data[self.treatment_col].unique().tolist()
+        
+        # standardize features
+        if self.features_to_standardize:
+            self.scaler.fit(self.raw_data.loc[self.split_idx['train'], self.features_to_standardize])
+            self.raw_data[self.features_to_standardize] = self.scaler.transform(self.raw_data[self.features_to_standardize])
 
-        # setup assumes data is standardized/one-hot encoded
+        # setup assumes data is one-hot encoded
         for idx, row in tqdm.tqdm(self.raw_data.iterrows(), desc=f'Processing {self.dataset_name} Dataset'):
             split = [k for k, v in self.split_idx.items() if idx in v][0]
 
@@ -70,7 +79,7 @@ class XYTDataModule(pl.LightningDataModule):
 
             # add it to the split
             self.splits[split].append(sample)
-
+        
         dataset_kwargs = {}
 
         if stage == 'fit':
