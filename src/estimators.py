@@ -1,5 +1,6 @@
 from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
 import numpy as np
+from operator import itemgetter
 
 base_regressor = GradientBoostingRegressor
 base_classifier = GradientBoostingClassifier
@@ -8,8 +9,9 @@ def propensity_estimator(X, T, multiclass=False): # propensity scores
     # this now outputs scores for each probability class
     propensity_model = base_classifier(random_state=40)
     pi = propensity_model.fit(X, T).predict_proba(X)
+    score = propensity_model.score(X, T)
     pi = pi if multiclass else pi[:, 1]
-    return pi
+    return {'pi': pi, 'score': score}
 
 def unadjusted_DM_estimator(data, treatment_var, outcome_var, **kwargs):
     # changed this to give us multi-class difference in means
@@ -24,7 +26,12 @@ def unadjusted_DM_estimator(data, treatment_var, outcome_var, **kwargs):
     for i in range(len(tx_classes)):
         for j in range(i + 1, len(tx_classes)):
             diff = estimates[tx_classes[j]] - estimates[tx_classes[i]]
-            results[f"{tx_classes[j]} vs {tx_classes[i]}"] = {'tau': diff}
+            results[f"{tx_classes[j]} vs {tx_classes[i]}"] = {
+                'tau': diff,
+                "variance": float('nan'),
+                "propensity_model_score": float('nan'),
+                "outcome_model_score": float('nan')
+            }
 
     return results
 
@@ -36,7 +43,7 @@ def ipw_estimator(data, treatment_var, outcome_var, covariates, **kwargs):
     
     tx_classes = np.sort(np.unique(T)).astype(int)
     multiclass = len(tx_classes) > 2
-    pi = propensity_estimator(X,T, multiclass=multiclass)
+    pi, propensity_model_score = itemgetter('pi', 'score')(propensity_estimator(X,T, multiclass=multiclass))
 
     # get weighted values for each person and get mean
     outcomes = {}
@@ -57,7 +64,9 @@ def ipw_estimator(data, treatment_var, outcome_var, covariates, **kwargs):
             var_diff = (outcomes[tx_classes[j]]['values'] - outcomes[tx_classes[i]]['values']).var()
             results[f"{tx_classes[j]} vs {tx_classes[i]}"] = {
                 "tau": tau_diff,
-                "variance": var_diff
+                "variance": var_diff,
+                "propensity_model_score": propensity_model_score,
+                "outcome_model_score": float('nan')
             }
 
     return results
@@ -73,9 +82,11 @@ def t_learner(data, treatment_var, outcome_var, covariates, continuous_outcome=F
 
     # train one model on each tx group and store it
     models = {}
+    outcome_model_scores = {}
     for k in tx_classes:
         model = outcome_model_class(random_state=40)
         model.fit(X[T==k], Y[T==k])
+        outcome_model_scores[k] = model.score(X[T==k], Y[T==k])
         models[k]=model
     
     # predict outcome for all patients using each model
@@ -90,7 +101,9 @@ def t_learner(data, treatment_var, outcome_var, covariates, continuous_outcome=F
             tau_diff = mu[tx_classes[j]] - mu[tx_classes[i]]
             results[f"{tx_classes[j]} vs {tx_classes[i]}"] = {
                 "tau": tau_diff.mean(),
-                "variance": tau_diff.var()
+                "variance": tau_diff.var(),
+                "propensity_model_score": float('nan'),
+                "outcome_model_score": [outcome_model_scores],
             }
 
     return results
@@ -106,6 +119,7 @@ def s_learner(data, treatment_var, outcome_var, covariates, continuous_outcome=F
     
     model = outcome_model_class(random_state=40)
     model.fit(XT, Y)
+    outcome_model_score = model.score(XT, Y)
 
     mu = {}
     # get counterfactual predictions from outcome model for all 
@@ -122,7 +136,9 @@ def s_learner(data, treatment_var, outcome_var, covariates, continuous_outcome=F
             mu_diff = mu[tx_classes[j]] - mu[tx_classes[i]]
             results[f"{tx_classes[j]} vs {tx_classes[i]}"] = {
                 "tau": mu_diff.mean(),
-                "variance": mu_diff.var()
+                "variance": mu_diff.var(),
+                "propensity_model_score": float('nan'),
+                "outcome_model_score": outcome_model_score,
             }
     return results
 
@@ -139,9 +155,11 @@ def x_learner(data, treatment_var, outcome_var, covariates, continuous_outcome=F
 
     # t-learner
     t_models={}
+    outcome_model_scores = {}
     for k in tx_classes:
         model = outcome_model_class(random_state=40)
         model.fit(X[T==k], Y[T==k])
+        outcome_model_scores[k] = model.score(X[T==k], Y[T==k])
         t_models[k] = model
     
     # build ITE estimator
@@ -163,7 +181,7 @@ def x_learner(data, treatment_var, outcome_var, covariates, continuous_outcome=F
         tau_models[k] = model
     
     # get propensity score
-    pi = propensity_estimator(X,T, multiclass=multiclass)
+    pi, propensity_model_score = itemgetter('pi', 'score')(propensity_estimator(X,T, multiclass=multiclass))
 
     # get individual treatment effects from tau models
     tau_i = {}
@@ -177,7 +195,9 @@ def x_learner(data, treatment_var, outcome_var, covariates, continuous_outcome=F
             tau_diff = tau_i[tx_classes[j]] - tau_i[tx_classes[i]]
             results[f"{tx_classes[j]} vs {tx_classes[i]}"] = {
                 "tau": tau_diff.mean(),
-                "variance": tau_diff.var()
+                "variance": tau_diff.var(),
+                "propensity_model_score": propensity_model_score,
+                "outcome_model_score": outcome_model_scores,
             }
     return results
 
@@ -193,12 +213,12 @@ def aipw_estimator(data, treatment_var, outcome_var, covariates, continuous_outc
     multiclass = n_txclasses > 2
 
     # propensity model
-    pi = propensity_estimator(X,T, multiclass=multiclass)
+    pi, propensity_model_score = itemgetter('pi', 'score')(propensity_estimator(X,T, multiclass=multiclass))
 
     # s-learner outcome model
     outcome_model = outcome_model_class(random_state=40)
     outcome_model.fit(XT, Y)
-    print(f'\tS-learner score: {outcome_model.score(XT,Y)}')
+    outcome_model_score = outcome_model.score(XT,Y)
 
     # get predictions from outcome model for each treatment class
     mu = np.zeros((len(data), n_txclasses))
@@ -221,7 +241,9 @@ def aipw_estimator(data, treatment_var, outcome_var, covariates, continuous_outc
             tau_diff = tau_i[j] - tau_i[i]
             results[f"{tx_classes[j]} vs {tx_classes[i]}"] = {
                 "tau": tau_diff.mean(),
-                "variance": tau_diff.var()
+                "variance": tau_diff.var(),
+                "propensity_model_score": propensity_model_score,
+                "outcome_model_score": outcome_model_score,
             }
     return results
 
