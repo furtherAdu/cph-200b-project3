@@ -1,4 +1,5 @@
 from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
+from src.utils import one_hot
 import numpy as np
 
 base_regressor = GradientBoostingRegressor
@@ -186,6 +187,7 @@ def aipw_estimator(data, treatment_var, outcome_var, covariates, continuous_outc
     XT = data[[*covariates, treatment_var]]
     T = data[treatment_var]
     Y = data[outcome_var]
+
     outcome_model_class = base_regressor if continuous_outcome else base_classifier
 
     tx_classes = np.sort(np.unique(T)).astype(int)
@@ -195,13 +197,30 @@ def aipw_estimator(data, treatment_var, outcome_var, covariates, continuous_outc
     # propensity model
     pi = propensity_estimator(X,T, multiclass=multiclass)
 
+    # one hot encode tx var
+    data = one_hot(data, [treatment_var])
+    data.columns = data.columns.str.replace('.0', '')
+    t_cols = ['sleep_deprivation_0', 'sleep_deprivation_1', 'sleep_deprivation_2']
+
+    XT = data[[*covariates, *t_cols]]
+    T = data[[*t_cols]]
+
     # s-learner outcome model
     outcome_model = outcome_model_class(random_state=40)
     outcome_model.fit(XT, Y)
     print(f'\tS-learner score: {outcome_model.score(XT,Y)}')
+    print('Feature Importance: ', outcome_model.feature_importances_)
 
     # get predictions from outcome model for each treatment class
     mu = np.zeros((len(data), n_txclasses))
+
+    for i, k in enumerate(tx_classes):
+        X_k = XT.copy()
+        for col in treatment_var:
+            X_k[col] = 0  # zero out all treatments
+        X_k[treatment_var[i]] = 1  # set this treatment to 1
+        mu[:, i] = outcome_model.predict(X_k) if continuous_outcome else outcome_model.predict_proba(X_k)[:, 1]
+
     for k in range(n_txclasses):
         X_k = XT.copy()
         X_k[treatment_var] = k
@@ -223,5 +242,5 @@ def aipw_estimator(data, treatment_var, outcome_var, covariates, continuous_outc
                 "tau": tau_diff.mean(),
                 "variance": tau_diff.var()
             }
-    return results
+    return results, mu
 
