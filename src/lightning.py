@@ -12,6 +12,7 @@ from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 
 from src._torch import CounterfactualRegressionTorch, DragonNetTorch
 from src.directory import log_dir
+from src.metrics import balanced_accuracy
 from sklearn.manifold import TSNE
 import matplotlib.pyplot as plt
 
@@ -281,7 +282,8 @@ class DragonNetLightning(pl.LightningModule):
                  beta=1.0,
                  learning_rate=1e-5,
                  target_reg=False,
-                 n_treatment_groups=2):
+                 n_treatment_groups=2,
+                 discrete_outcome=True):
         super().__init__()
         self.save_hyperparameters()
 
@@ -294,6 +296,8 @@ class DragonNetLightning(pl.LightningModule):
         self.co_hidden_dim = co_hidden_dim
         self.target_reg = target_reg
         self.n_treatment_groups = n_treatment_groups
+        self.discrete_outcome = discrete_outcome
+        self.outcome_loss = nn.BCELoss() if self.discrete_outcome else F.mse_loss
         
         # structures to hold outputs/metrics
         self.outputs = defaultdict(list)
@@ -313,10 +317,10 @@ class DragonNetLightning(pl.LightningModule):
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=self.learning_rate)
         # scheduler = optim.lr_scheduler.LinearLR(optimizer, start_factor=10, total_iters=10)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5)
+        # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5)
         # scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=.9)
         # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 20)
-        return {'optimizer': optimizer, 'scheduler': scheduler}
+        return optimizer
 
     @staticmethod
     def safely_to_numpy(tensor):
@@ -350,14 +354,26 @@ class DragonNetLightning(pl.LightningModule):
         else:
             target_reg_loss = torch.Tensor([0])
         loss = dragon_net_loss + target_reg_loss
-        outcome_model_mse = self.mse_loss(ys, Y, T)
+
+        propensity_model_bal_acc = balanced_accuracy(t, T)
         
         losses = {'loss': loss, 
                   'dragon_net_loss': dragon_net_loss,
                   'targeted_regularization_loss':target_reg_loss,
-                  'outcome_model_mse':outcome_model_mse}
+                  'propensity_model_bal_acc':propensity_model_bal_acc}
         
         return losses
+    
+    def bce_loss(self, y_pred, Y):
+        bce_loss = nn.BCEWithLogitsLoss()(y_pred, Y)
+        return bce_loss
+
+    @staticmethod
+    def get_ypred(ys, T):
+        n_treatments = ys.size(1)
+        T_onehot = F.one_hot(T.long(), num_classes=n_treatments).float()
+        y_pred = (ys * T_onehot).sum(1)
+        return y_pred
 
     def targeted_regularization_loss(self, ys, t, Y, T, eps, beta=1.0):
         q_tilde = self.get_targeted_outcome(ys, t, T, eps)
@@ -366,35 +382,33 @@ class DragonNetLightning(pl.LightningModule):
         return targeted_regularization_loss
     
     def get_targeted_outcome(self, ys, t, T, eps):
-        n_treatments = ys.size(1)
-        T_onehot = F.one_hot(T.long(), num_classes=n_treatments).float()
         t = torch.clamp(t, min=.01, max=.99) # clamp value to avoid nan loss
-        h = self.get_h(t,T)
-        y_pred = (ys * T_onehot).sum(1) 
+        h = self.get_h(t, T)
+        y_pred = self.get_ypred(ys, T)        
         q_tilde = y_pred + eps * h
         return q_tilde
     
     @staticmethod
-    def get_h(t, T):
+    def get_h(t, T, reference_treatment=0):
+        n_units = t.size(0)
         n_treatments = t.size(1)
         T_onehot = F.one_hot(T.long(), num_classes=n_treatments).float()
-        h = (T_onehot / t).sum(1) - (((1 - T_onehot) / (1 - t)) * (1 - T_onehot)).sum(1)
+        h = torch.zeros(n_units, requires_grad=True)
+        assigned_treatments = list(set(range(n_treatments)) - set([reference_treatment]))
+        reference_sum = (1 - T_onehot[:,reference_treatment]) / (1 - t[:,reference_treatment])
+        for j in assigned_treatments:
+            assigned_sum = (T_onehot[:,j] / t[:,j]) 
+            h = h + assigned_sum - reference_sum
         return h
     
     def dragonnet_loss(self, ys, t, Y, T, alpha=1.0):
         t = torch.clamp(t, min=.01, max=.99)
-        outcome_loss = self.mse_loss(ys, Y, T)
+        y_pred = self.get_ypred(ys, T)
+        outcome_loss = self.outcome_loss(y_pred, Y)
         cross_entropy = F.binary_cross_entropy if len(ys) == 2 else F.cross_entropy
         treatment_loss = cross_entropy(t, T.long())
         dragonnet_loss = outcome_loss + alpha * treatment_loss 
         return dragonnet_loss
-
-    def mse_loss(self, ys, Y, T):
-        n_treatments = ys.size(1)
-        T_onehot = F.one_hot(T.long(), num_classes=n_treatments).float()
-        y_pred = (ys * T_onehot).sum(1)
-        mse_loss = F.mse_loss(y_pred, Y)      
-        return mse_loss
     
     def step(self, batch, batch_idx, stage):
         X, Y, T = self.get_model_input(batch)
@@ -406,9 +420,6 @@ class DragonNetLightning(pl.LightningModule):
         # get loss
         losses = self.get_losses(ys, t, Y, T, eps)
         loss = losses['loss']
-        dragon_net_loss = losses['dragon_net_loss']
-        target_reg_loss = losses['targeted_regularization_loss']
-        outcome_model_mse = losses['outcome_model_mse']
         
         # store outputs
         self.outputs[stage].append({'ys':ys,
@@ -422,14 +433,14 @@ class DragonNetLightning(pl.LightningModule):
         # log metrics
         if stage not in ['predict', 'test']:
             log_kwargs = dict(prog_bar=True, sync_dist=True)
-            self.log(f'{stage}_dragon_net_loss', dragon_net_loss, **log_kwargs)
-            self.log(f'{stage}_target_regularization_loss', target_reg_loss, **log_kwargs)
-            self.log(f'{stage}_loss', loss, **log_kwargs)
-            self.log(f'{stage}_outcome_model_mse', outcome_model_mse, **log_kwargs)
+            self.log_dict({f'{stage}_{k}':v for k,v in losses.items()}, **log_kwargs)
 
         return loss
     
     def on_epoch_end(self, stage):
+        treatment_classes = self.trainer.datamodule.treatment_classes
+        n_treatment_classes = len(treatment_classes)
+        
         # concat outputs
         outputs_vars = ['X', 'Y', 'T', 't', 'eps', 'phi_x']
         X, Y, T, t, eps, phi_x = [torch.cat([o[x] for o in self.outputs[stage]]).squeeze() for x in outputs_vars]
@@ -443,19 +454,17 @@ class DragonNetLightning(pl.LightningModule):
         
         # get losses
         losses = self.get_losses(ys, t, Y, T, eps)
-        loss = losses['loss']
-        dragon_net_loss = losses['dragon_net_loss']
-        target_reg_loss = losses['targeted_regularization_loss']
-        outcome_model_mse = losses['outcome_model_mse']
         
         # update metrics with losses
-        metric_dict = {
-            f'{stage}_loss': loss,
-            f'{stage}_dragon_net_loss': dragon_net_loss,
-            f'{stage}_targeted_regularization_loss': target_reg_loss,
-            f'{stage}_outcome_model_mse': outcome_model_mse
-        }
+        metric_dict = {f'{stage}_{k}':v for k,v in losses.items()}
         
+        # calculate outcome model scores
+        for i in range(n_treatment_classes):
+            if self.discrete_outcome:
+                metric_dict[f'outcome_model_{i}_acc'] = ((ys[i] > .5) == Y).float().mean().item() # accuracy
+            else:
+                metric_dict[f'outcome_model_{i}_mae'] = (ys[i] - Y).abs().mean().item() # mae
+                    
         # exclude data points with propensity score outside [.01,.99] for ATE estimation
         included = (.01 <= t).squeeze() * (t <= .99).squeeze()
         if self.n_treatment_groups > 2:
@@ -463,13 +472,11 @@ class DragonNetLightning(pl.LightningModule):
         ys = torch.stack([v for _,v in ys.items()], dim=1)        
         ys = ys[included]
         T = T[included]
-        
+                
         # calculate standard error of ATE estimates
         standard_error = self.calc_ATE_std_error(ys, t, T, Y, eps)
         
         # update metrics with performance metrics
-        treatment_classes = self.trainer.datamodule.treatment_classes
-        n_treatment_classes = len(treatment_classes)
         tau_results = {}
         
         for i in range(n_treatment_classes):
@@ -482,6 +489,20 @@ class DragonNetLightning(pl.LightningModule):
                 # log standard error
                 tau_results[f"{stage}_se_{treatment_classes[j]} vs {treatment_classes[i]}"] = standard_error[f'{j}{i}']
                 
+                # compute risk ratio
+                risk_i = ys[:, i].mean()
+                risk_j = ys[:, j].mean()
+                rr = risk_j / risk_i if risk_i > 0 else torch.tensor([float('nan')])
+                tau_results[f"{stage}_rr_{treatment_classes[j]} vs {treatment_classes[i]}"] = rr.item()
+                
+                # compute E-value
+                if rr >= 1:
+                    e_value = rr + (rr * (rr - 1)).pow(.5)
+                else:
+                    rr_inv = 1 / rr
+                    e_value = rr_inv + (rr_inv * (rr_inv - 1)).pow(.5)
+                tau_results[f"{stage}_e_value_{treatment_classes[j]} vs {treatment_classes[i]}"] = e_value.item()
+            
         metric_dict.update(tau_results)
         
         if stage not in ['predict']:  # log metrics

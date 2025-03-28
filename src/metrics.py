@@ -56,4 +56,30 @@ def mse_loss(self, ys, Y, T):
     return mse_loss
 
 
+def balanced_accuracy(probs, labels):
+    """
+    Calculates balanced accuracy from predicted class probabilities and true labels.
+
+    Args:
+        probs (torch.Tensor): Predicted class probabilities (n x k).
+        labels (torch.Tensor): True class labels (n).
+
+    Returns:
+        float: Balanced accuracy.
+    """
+
+    preds = torch.argmax(probs, dim=1)  # Get predicted class labels
+    unique_labels = torch.unique(labels)
+    recalls = []
+
+    for label in unique_labels:
+        mask = (labels == label)
+        true_positives = torch.sum(preds[mask] == labels[mask]).float()
+        total_positives = torch.sum(mask).float()
+        recall = true_positives / total_positives
+        recalls.append(recall)
+
+    return torch.mean(torch.tensor(recalls)).item()
+
+
 

@@ -39,6 +39,7 @@ class XYTDataModule(pl.LightningDataModule):
         self.outcome_col = outcome_col
         self.u = None
         self.treatment_classes = None
+        self.n_outcomes = None
         self.features_to_standardize = features_to_standardize
         self.scaler = StandardScaler()
 
@@ -57,6 +58,7 @@ class XYTDataModule(pl.LightningDataModule):
     def setup(self, stage=None):
         self.u = self.raw_data[self.treatment_col].mean()
         self.treatment_classes = self.raw_data[self.treatment_col].unique().tolist()
+        self.n_outcomes = self.raw_data[self.outcome_col].nunique()
         
         # standardize features
         if self.features_to_standardize:

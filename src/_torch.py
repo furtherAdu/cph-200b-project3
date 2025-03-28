@@ -67,18 +67,20 @@ class CounterfactualRegressionTorch(nn.Module):
     
 
 class DragonNetTorch(nn.Module):
-    def __init__(self, input_dim, sr_hidden_dim=200, co_hidden_dim=100, n_treatment_groups=2):
+    def __init__(self, input_dim, sr_hidden_dim=200, co_hidden_dim=100, n_treatment_groups=2, discrete_outcome=True):
         super().__init__()
         
         self.n_treatment_groups = n_treatment_groups
 
         self.shared_representation = CFR_RepresentationNetwork(input_dim, sr_hidden_dim)
 
+        outcome_final_layer = [nn.Sigmoid()] if discrete_outcome else []
         self.outcome_heads = nn.ModuleDict({
             str(k): nn.Sequential(
                     nn.Linear(sr_hidden_dim, co_hidden_dim // 2),
                     nn.ELU(),
-                    nn.Linear(co_hidden_dim // 2, 1)
+                    nn.Linear(co_hidden_dim // 2, 1),
+                    *outcome_final_layer
                 ) 
              for k in range(self.n_treatment_groups)})
 
@@ -96,7 +98,7 @@ class DragonNetTorch(nn.Module):
         )
         
         self.epsilon = nn.Linear(1,1)
-                
+
         self.double()
 
     def forward(self, x):
