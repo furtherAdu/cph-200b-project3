@@ -219,6 +219,7 @@ def get_NHANES_questionnaire_df(vars_lookup_df, dataset_path, columns, index='SE
         df[htn_prescription_col] = df[htn_prescription_col].apply(lambda x: 1 if x > 0 else x)
         
         df['BPQ020'].replace(binary_response_dict, inplace=True) # gotten HTN dx
+        df[htn_dx_col] = df['BPQ020']
 
         # drop unnecessary cols
         df.drop(NHANES_transformations[htn_prescription_col], axis=1, inplace=True)

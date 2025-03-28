@@ -87,6 +87,7 @@ NHANES_nan_fill = {
     htn_interview_col: 0,
     htn_prescription_col:0,
     htn_exam_col:0,
+    htn_dx_col:0,
     sleep_deprivation_col:0,
     light_col:float('nan'),
 
