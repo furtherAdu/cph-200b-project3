@@ -482,7 +482,6 @@ def propensity_score_matching_multiclass(df, treatment_col, covariate_cols, matc
         df (pd.DataFrame): Input DataFrame with covariates, treatment, and outcome.
         treatment_col (str): Name of the treatment column.
         covariate_cols (list): List of column names for covariates.
-        y_col (str, optional): Name of the outcome column. Defaults to None.
         match_ratio (int, optional): Number of matches per treated unit. Defaults to 1.
 
     Returns:
@@ -682,4 +681,49 @@ def love_plot_multiclass_abs_compare(original_df, matched_df, t_col, covariate_n
     )
     plt.axvline(x=0.1, color="red", linestyle="--")  # Common threshold for acceptable balance
     plt.title("Love Plot - Absolute SMD Comparison (Original vs. Matched)")
+    plt.show()
+    
+    
+def plot_points_with_ci(df, x_col='x', y_col='y', se_col='se', title='Points with Confidence Intervals', x_label='X Axis', y_label='Y Axis', output_path='plot.png'):
+    """
+    Plots points with confidence intervals using Seaborn and Times New Roman font,
+    with a grid and a gray dashed line for y = 0.
+
+    Args:
+        df (pd.DataFrame): DataFrame containing x, y, and standard error columns.
+        x_col (str): Name of the x-value column.
+        y_col (str): Name of the y-value column.
+        se_col (str): Name of the standard error column.
+        title (str): Title of the plot.
+        x_label (str): Label for the x-axis.
+        y_label (str): Label for the y-axis.
+        output_path (str): Path to save the plot.
+    """
+
+    # Calculate confidence interval bounds (assuming 95% CI)
+    df['lower'] = df[y_col] - 1.96 * df[se_col]
+    df['upper'] = df[y_col] + 1.96 * df[se_col]
+
+    # # Set Times New Roman font for all text
+    plt.rcParams['font.family'] = 'serif'
+    plt.rcParams['font.serif'] = ['Times New Roman'] + plt.rcParams['font.serif']   
+
+    # Create the plot
+    plt.figure(figsize=(10, 6))  # Adjust figure size as needed
+    sns.scatterplot(x=x_col, y=y_col, data=df, color='black') # plot the points
+    plt.errorbar(x=df[x_col], y=df[y_col], yerr=1.96 * df[se_col], fmt='none', color='black', capsize=5) # plot the error bars.
+
+    # Add grid
+    plt.grid(True, linestyle='--', alpha=0.5)
+
+    # Add gray dashed line for y = 0
+    plt.axhline(y=0, color='gray', linestyle='--')
+
+    # Set labels and title
+    plt.title(title, fontsize=16)
+    plt.xlabel(x_label, fontsize=12)
+    plt.ylabel(y_label, fontsize=12)
+
+    # Save the plot
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.show()
