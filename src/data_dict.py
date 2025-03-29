@@ -136,3 +136,11 @@ numerical_cols = [
        diastolic_col,
        systolic_col
 ]
+
+marital_status_dict = dict(zip([f'{marital_col}_{i}' for i in range(1,7)],
+                               ['Married','Widowed','Divorced','Separated','Never married','Living with partner']))
+race_ethnicity_dict = dict(zip([f'{race_ethnicity_col}_{i}' for i in range(1,7)],
+                               ["Mexican American","Other Hispanic","Non-Hispanic White","Non-Hispanic Black","Non-Hispanic Asian","Other Race - Including Multi-Racial"]))
+
+sleep_deprivation_dict = dict(zip([f'{sleep_deprivation_col}_{i}' for i in range(3)],
+                               ["Control", "Mild", "Severe"]))
